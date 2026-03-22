@@ -34,33 +34,57 @@ use ironflow_anthropic::AnthropicProvider;
 use ironflow_tools_interaction::*;
 use ironflow_tools_task::*;
 
-// 1. Create a provider
-let provider: Arc<dyn AiProvider> = Arc::new(
-    AnthropicProvider::new("sk-...".into(), "claude-sonnet-4-6".into())
-);
+#[tokio::main]
+async fn main() {
+    // 1. Create a provider
+    let provider: Arc<dyn AiProvider> = Arc::new(
+        AnthropicProvider::new("sk-...".into(), "claude-sonnet-4-6".into())
+    );
 
-// 2. Register tools
-let task_store = TaskStore::new();
-let mut registry = ToolRegistry::new();
-registry.register(Box::new(AskUserTool));
-registry.register(Box::new(ShowPlanTool));
-registry.register(Box::new(CreateTaskTool::new(task_store.clone())));
-// ... more tools
+    // 2. Register tools
+    let task_store = TaskStore::new();
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(AskUserTool)).await;
+    registry.register(Arc::new(ShowPlanTool)).await;
+    registry.register(Arc::new(CreateTaskTool::new(task_store.clone()))).await;
 
-// 3. Provide storage (implement SessionStore + MemoryStore, or use ironflow-sqlite)
-let session_store: Arc<dyn SessionStore> = /* your impl */;
-let memory_store: Arc<dyn MemoryStore> = /* your impl */;
+    // 3. Provide storage (implement SessionStore + MemoryStore, or use ironflow-sqlite)
+    let session_store: Arc<dyn SessionStore> = /* your impl */;
+    let memory_store: Arc<dyn MemoryStore> = /* your impl */;
 
-// 4. Create runner and go
-let runner = AgentRunner::new(provider, Arc::new(registry), session_store, memory_store, AgentConfig::default());
-let session = runner.create_session("my-scope").await?;
+    // 4. Create runner
+    let runner = AgentRunner::new(
+        provider,
+        Arc::new(registry),
+        session_store,
+        memory_store,
+        AgentConfig::default(),
+    );
+    let session = runner.create_session("my-scope").await.unwrap();
 
-// 5. Run turns with event streaming
-let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(100);
-let (_, mut interaction_rx) = tokio::sync::mpsc::channel(10);
-let (_, mut approval_rx) = tokio::sync::mpsc::channel(10);
+    // 5. Run a turn with event streaming
+    let (request, channels) = TurnRequest::new(
+        &session.id,
+        "my-scope",
+        "Hello!",
+        "You are a helpful assistant.",
+    );
 
-runner.run_turn(&session.id, "my-scope", "Hello!", "You are helpful.", event_tx, &mut interaction_rx, &mut approval_rx, false).await?;
+    // Consume events in a separate task
+    tokio::spawn(async move {
+        let mut event_rx = channels.event_rx;
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                AgentEvent::TextDelta { text } => print!("{}", text),
+                AgentEvent::TextComplete { text, .. } => println!("\n{}", text),
+                AgentEvent::TurnComplete => break,
+                _ => {}
+            }
+        }
+    });
+
+    runner.run_turn(request).await.unwrap();
+}
 ```
 
 ## Key Concepts
@@ -68,6 +92,15 @@ runner.run_turn(&session.id, "my-scope", "Hello!", "You are helpful.", event_tx,
 ### scope_id
 
 An opaque string that groups sessions, memories, and tasks. Your application decides what it represents — a project ID, user ID, workspace ID, etc.
+
+### AiProvider
+
+Implement `AiProvider` to add a new LLM backend. Only two methods are required:
+
+- `converse()` — send a conversation and get a response
+- `capabilities()` — report what the provider supports
+
+Default implementations are provided for `generate_text` (wraps `converse`), `generate_image`, `analyze_image` (both return `NotSupported`), and `converse_stream` (wraps `converse` into a single-item stream).
 
 ### Tool System
 
@@ -80,7 +113,7 @@ impl AgentTool for MyTool {
     fn definition(&self) -> ToolDefinition { /* JSON schema */ }
     fn permission(&self) -> ToolPermission { ToolPermission::AutoExecute }
     async fn execute(&self, scope_id: &str, args: Value) -> Result<ToolExecResult, AgentError> {
-        Ok(ToolExecResult::Completed("done".into()))
+        Ok(ToolExecResult::text("done"))
     }
 }
 ```
@@ -89,12 +122,26 @@ Tools return either `Completed(result)` or `NeedsInteraction(request)`.
 
 ### Approval Flow
 
-Tools with `RequiresApproval` block until the caller sends an approval via the `approval_rx` channel. When a plan is approved (via `ShowPlanTool`), subsequent `RequiresApproval` tools auto-approve for that turn.
+Tools with `RequiresApproval` block until the caller sends an approval via `TurnChannels.approval_tx`. When a plan is approved (via `ShowPlanTool`), subsequent `RequiresApproval` tools auto-approve for that turn.
 
 ### Event Streaming
 
-The runner emits `AgentEvent`s via the `event_tx` channel:
+`TurnRequest::new()` returns `(request, TurnChannels)`. Consume `TurnChannels.event_rx` to receive events in real-time:
+
 `Thinking` → `ToolCallStarted` → `ToolCallCompleted` → ... → `TextComplete` → `TurnComplete`
+
+### Configuration
+
+`AgentConfig` controls runtime behavior:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_tool_rounds` | 20 | Max tool-calling rounds per turn |
+| `max_tokens` | 4096 | Max tokens for AI provider responses |
+| `max_context_tokens` | 100,000 | Token budget for conversation context |
+| `tool_timeout_secs` | None | Per-tool execution timeout |
+| `max_retries` | 3 | Retries on rate-limit errors |
+| `retry_base_delay_ms` | 1000 | Base delay for exponential backoff |
 
 ## Running the Example
 
