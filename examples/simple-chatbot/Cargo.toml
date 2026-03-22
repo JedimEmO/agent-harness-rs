@@ -1,0 +1,16 @@
+[package]
+name = "simple-chatbot"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ironflow-core = { workspace = true }
+ironflow-anthropic = { path = "../../crates/ironflow-anthropic" }
+ironflow-tools-interaction = { path = "../../crates/ironflow-tools-interaction" }
+ironflow-tools-task = { path = "../../crates/ironflow-tools-task" }
+tokio = { workspace = true, features = ["full"] }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }

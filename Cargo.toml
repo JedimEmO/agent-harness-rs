@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/ironflow-core",
+    "crates/ironflow-anthropic",
+    "crates/ironflow-openai",
+    "crates/ironflow-tools-interaction",
+    "crates/ironflow-tools-memory",
+    "crates/ironflow-tools-task",
+    "crates/ironflow-sqlite",
+    "examples/simple-chatbot",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ironflow-core = { path = "crates/ironflow-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+bytes = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-stream = "0.3"
+base64 = "0.22"
+diesel = { version = "2", features = ["sqlite", "r2d2"] }
+diesel_migrations = "2"
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }

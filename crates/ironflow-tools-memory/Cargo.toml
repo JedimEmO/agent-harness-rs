@@ -1,0 +1,11 @@
+[package]
+name = "ironflow-tools-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memory tools for ironflow agents (save_memory, recall_memories)"
+
+[dependencies]
+ironflow-core = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
