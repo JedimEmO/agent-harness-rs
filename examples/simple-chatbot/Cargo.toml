@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 ironflow-core = { workspace = true }
+ironflow-context = { workspace = true }
 ironflow-anthropic = { path = "../../crates/ironflow-anthropic" }
 ironflow-tools-interaction = { path = "../../crates/ironflow-tools-interaction" }
 ironflow-tools-task = { path = "../../crates/ironflow-tools-task" }

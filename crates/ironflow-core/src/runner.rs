@@ -129,6 +129,8 @@ pub struct AgentRunner {
     config: AgentConfig,
     context_manager: ContextManager,
     guardrails: Vec<Arc<dyn OutputGuardrail>>,
+    #[cfg(feature = "context-pipeline")]
+    context_pipeline: Option<Arc<ironflow_context::ContextPipeline>>,
 }
 
 impl AgentRunner {
@@ -149,12 +151,28 @@ impl AgentRunner {
             config,
             context_manager,
             guardrails: Vec::new(),
+            #[cfg(feature = "context-pipeline")]
+            context_pipeline: None,
         }
     }
 
     /// Add an output guardrail that validates LLM text responses.
     pub fn add_guardrail(&mut self, guardrail: Arc<dyn OutputGuardrail>) {
         self.guardrails.push(guardrail);
+    }
+
+    /// Use a custom [`ContextPipeline`](ironflow_context::ContextPipeline) instead of the
+    /// built-in truncation-based context manager.
+    ///
+    /// When set, the pipeline processes `SessionMessage`s (converted to `ContextBlock`s)
+    /// through its composable strategies before sending to the AI provider.
+    #[cfg(feature = "context-pipeline")]
+    pub fn with_context_pipeline(
+        mut self,
+        pipeline: Arc<ironflow_context::ContextPipeline>,
+    ) -> Self {
+        self.context_pipeline = Some(pipeline);
+        self
     }
 
     pub fn session_store(&self) -> &Arc<dyn SessionStore> {
@@ -225,6 +243,28 @@ impl AgentRunner {
             let _ = request.event_tx.send(AgentEvent::Thinking).await;
 
             // Build conversation from in-memory history
+            #[cfg(feature = "context-pipeline")]
+            let (messages, truncation_info) = if let Some(ref pipeline) = self.context_pipeline {
+                let blocks = crate::context_bridge::session_messages_to_blocks(&local_messages);
+                let (processed, report) = pipeline
+                    .process(blocks, self.config.max_context_tokens)
+                    .await
+                    .map_err(|e| AgentError::StorageError(format!("context pipeline: {}", e)))?;
+                let msgs = crate::context_bridge::blocks_to_conversation(&processed);
+                let trunc = if report.original_blocks != report.final_blocks {
+                    Some(crate::context::TruncationInfo {
+                        dropped_messages: report.original_blocks - report.final_blocks,
+                        remaining_messages: report.final_blocks,
+                    })
+                } else {
+                    None
+                };
+                (msgs, trunc)
+            } else {
+                self.context_manager.prepare_messages(&local_messages)
+            };
+
+            #[cfg(not(feature = "context-pipeline"))]
             let (messages, truncation_info) =
                 self.context_manager.prepare_messages(&local_messages);
 

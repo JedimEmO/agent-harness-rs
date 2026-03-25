@@ -8,6 +8,9 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use ironflow_core::*;
+use ironflow_context::{
+    CharEstimateCounter, ContextPipeline, PriorityRetention, TruncateOldest,
+};
 use ironflow_anthropic::AnthropicProvider;
 use ironflow_tools_interaction::*;
 use ironflow_tools_task::*;
@@ -45,22 +48,30 @@ async fn main() {
     let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
     let memory_store: Arc<dyn MemoryStore> = Arc::new(InMemoryMemoryStore::new());
 
-    // 4. Create runner
+    // 4. Build context pipeline — composable strategies for managing token budget
+    let pipeline = Arc::new(ContextPipeline::builder()
+        .token_counter(CharEstimateCounter::new(4))
+        .strategy(PriorityRetention::new())
+        .strategy(TruncateOldest::new())
+        .build());
+
+    // 5. Create runner with context pipeline
     let runner = AgentRunner::new(
         provider,
         Arc::new(registry),
         session_store,
         memory_store,
         AgentConfig::default(),
-    );
+    )
+    .with_context_pipeline(pipeline);
 
-    // 5. Create a session
+    // 6. Create a session
     let scope_id = "chatbot";
     let session = runner.create_session(scope_id).await.expect("failed to create session");
     println!("Session created: {}", session.id);
     println!("Type your messages (Ctrl+C to quit):\n");
 
-    // 6. REPL loop
+    // 7. REPL loop
     loop {
         print!("> ");
         io::stdout().flush().unwrap();

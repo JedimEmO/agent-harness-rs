@@ -23,6 +23,8 @@ mod session;
 mod memory;
 mod interaction;
 mod context;
+#[cfg(feature = "context-pipeline")]
+mod context_bridge;
 mod config;
 mod agent;
 mod guardrail;
