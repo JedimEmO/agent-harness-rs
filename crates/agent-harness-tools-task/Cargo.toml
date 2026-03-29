@@ -1,0 +1,13 @@
+[package]
+name = "agent-harness-tools-task"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Task tracking tools for agent-harness agents (create_task, update_task, list_tasks)"
+
+[dependencies]
+agent-harness-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }

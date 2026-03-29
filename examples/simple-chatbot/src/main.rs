@@ -1,4 +1,4 @@
-//! Simple CLI chatbot demonstrating the ironflow agent framework.
+//! Simple CLI chatbot demonstrating the agent-harness agent framework.
 //!
 //! Run with: `ANTHROPIC_API_KEY=... cargo run -p simple-chatbot`
 
@@ -7,13 +7,13 @@ mod stores;
 use std::io::{self, Write};
 use std::sync::Arc;
 
-use ironflow_core::*;
-use ironflow_context::{
+use agent_harness_core::*;
+use agent_harness_context::{
     CharEstimateCounter, ContextPipeline, PriorityRetention, TruncateOldest,
 };
-use ironflow_anthropic::AnthropicProvider;
-use ironflow_tools_interaction::*;
-use ironflow_tools_task::*;
+use agent_harness_anthropic::AnthropicProvider;
+use agent_harness_tools_interaction::*;
+use agent_harness_tools_task::*;
 
 use stores::{InMemorySessionStore, InMemoryMemoryStore};
 

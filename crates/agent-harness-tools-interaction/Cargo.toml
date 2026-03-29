@@ -1,0 +1,11 @@
+[package]
+name = "agent-harness-tools-interaction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "User interaction tools for agent-harness agents (ask_user, offer_options, confirm_action, show_plan)"
+
+[dependencies]
+agent-harness-core = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }

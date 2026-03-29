@@ -1,38 +1,38 @@
-# ironflow
+# agent-harness
 
 A Rust framework for building LLM-powered agents with tool calling, approval gates, and streaming events.
 
 ## Architecture
 
 ```
-ironflow-anthropic ─────────> ironflow-core
-ironflow-openai ────────────> ironflow-core
-ironflow-tools-interaction ──> ironflow-core
-ironflow-tools-memory ──────> ironflow-core
-ironflow-tools-task ────────> ironflow-core
-ironflow-sqlite ────────────> ironflow-core + diesel
+agent-harness-anthropic ─────────> agent-harness-core
+agent-harness-openai ────────────> agent-harness-core
+agent-harness-tools-interaction ──> agent-harness-core
+agent-harness-tools-memory ──────> agent-harness-core
+agent-harness-tools-task ────────> agent-harness-core
+agent-harness-sqlite ────────────> agent-harness-core + diesel
 ```
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
-| `ironflow-core` | AI provider trait, agent runner, tool system, events, session/memory store traits |
-| `ironflow-anthropic` | Anthropic Messages API provider (`/v1/messages`, `x-api-key` auth) |
-| `ironflow-openai` | OpenAI Chat Completions provider (OpenRouter, vLLM, Ollama, Azure, OpenAI) |
-| `ironflow-tools-interaction` | User interaction tools: ask_user, offer_options, confirm_action, show_plan |
-| `ironflow-tools-memory` | Memory tools: save_memory, recall_memories (uses `MemoryStore` trait) |
-| `ironflow-tools-task` | Task tracking: create_task, update_task, list_tasks + in-memory TaskStore |
-| `ironflow-sqlite` | SQLite-backed `SessionStore` + `MemoryStore` via Diesel |
+| `agent-harness-core` | AI provider trait, agent runner, tool system, events, session/memory store traits |
+| `agent-harness-anthropic` | Anthropic Messages API provider (`/v1/messages`, `x-api-key` auth) |
+| `agent-harness-openai` | OpenAI Chat Completions provider (OpenRouter, vLLM, Ollama, Azure, OpenAI) |
+| `agent-harness-tools-interaction` | User interaction tools: ask_user, offer_options, confirm_action, show_plan |
+| `agent-harness-tools-memory` | Memory tools: save_memory, recall_memories (uses `MemoryStore` trait) |
+| `agent-harness-tools-task` | Task tracking: create_task, update_task, list_tasks + in-memory TaskStore |
+| `agent-harness-sqlite` | SQLite-backed `SessionStore` + `MemoryStore` via Diesel |
 
 ## Quick Start
 
 ```rust
 use std::sync::Arc;
-use ironflow_core::*;
-use ironflow_anthropic::AnthropicProvider;
-use ironflow_tools_interaction::*;
-use ironflow_tools_task::*;
+use agent_harness_core::*;
+use agent_harness_anthropic::AnthropicProvider;
+use agent_harness_tools_interaction::*;
+use agent_harness_tools_task::*;
 
 #[tokio::main]
 async fn main() {
@@ -48,7 +48,7 @@ async fn main() {
     registry.register(Arc::new(ShowPlanTool)).await;
     registry.register(Arc::new(CreateTaskTool::new(task_store.clone()))).await;
 
-    // 3. Provide storage (implement SessionStore + MemoryStore, or use ironflow-sqlite)
+    // 3. Provide storage (implement SessionStore + MemoryStore, or use agent-harness-sqlite)
     let session_store: Arc<dyn SessionStore> = /* your impl */;
     let memory_store: Arc<dyn MemoryStore> = /* your impl */;
 

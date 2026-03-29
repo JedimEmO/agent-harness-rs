@@ -1,0 +1,11 @@
+[package]
+name = "agent-harness-tools-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memory tools for agent-harness agents (save_memory, recall_memories)"
+
+[dependencies]
+agent-harness-core = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }

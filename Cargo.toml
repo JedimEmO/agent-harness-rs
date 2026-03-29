@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "crates/ironflow-core",
-    "crates/ironflow-context",
-    "crates/ironflow-anthropic",
-    "crates/ironflow-openai",
-    "crates/ironflow-tools-interaction",
-    "crates/ironflow-tools-memory",
-    "crates/ironflow-tools-task",
-    "crates/ironflow-sqlite",
+    "crates/agent-harness-core",
+    "crates/agent-harness-context",
+    "crates/agent-harness-anthropic",
+    "crates/agent-harness-openai",
+    "crates/agent-harness-tools-interaction",
+    "crates/agent-harness-tools-memory",
+    "crates/agent-harness-tools-task",
+    "crates/agent-harness-sqlite",
     "examples/simple-chatbot",
 ]
 resolver = "2"
@@ -18,8 +18,8 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-ironflow-core = { path = "crates/ironflow-core" }
-ironflow-context = { path = "crates/ironflow-context" }
+agent-harness-core = { path = "crates/agent-harness-core" }
+agent-harness-context = { path = "crates/agent-harness-context" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -5,11 +5,11 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-ironflow-core = { workspace = true }
-ironflow-context = { workspace = true }
-ironflow-anthropic = { path = "../../crates/ironflow-anthropic" }
-ironflow-tools-interaction = { path = "../../crates/ironflow-tools-interaction" }
-ironflow-tools-task = { path = "../../crates/ironflow-tools-task" }
+agent-harness-core = { workspace = true }
+agent-harness-context = { workspace = true }
+agent-harness-anthropic = { path = "../../crates/agent-harness-anthropic" }
+agent-harness-tools-interaction = { path = "../../crates/agent-harness-tools-interaction" }
+agent-harness-tools-task = { path = "../../crates/agent-harness-tools-task" }
 tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
