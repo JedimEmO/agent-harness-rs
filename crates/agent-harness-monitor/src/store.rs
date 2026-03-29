@@ -139,7 +139,8 @@ impl MonitorStore {
 
         if let Some(ref kinds) = filter.kinds {
             if !kinds.is_empty() {
-                query = query.filter(monitor_events::kind.eq_any(kinds));
+                let kind_strs: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+                query = query.filter(monitor_events::kind.eq_any(kind_strs));
             }
         }
 
@@ -153,7 +154,7 @@ impl MonitorStore {
             query = query.filter(monitor_events::span_id.eq(span_id));
         }
         if let Some(ref direction) = filter.direction {
-            query = query.filter(monitor_events::direction.eq(direction));
+            query = query.filter(monitor_events::direction.eq(direction.as_str()));
         }
         if let Some(ref after) = filter.after {
             query = query.filter(monitor_events::timestamp.gt(after));
@@ -187,7 +188,8 @@ impl MonitorStore {
 
         if let Some(ref kinds) = filter.kinds {
             if !kinds.is_empty() {
-                query = query.filter(monitor_events::kind.eq_any(kinds));
+                let kind_strs: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+                query = query.filter(monitor_events::kind.eq_any(kind_strs));
             }
         }
         if let Some(ref provider) = filter.provider {
@@ -200,7 +202,7 @@ impl MonitorStore {
             query = query.filter(monitor_events::span_id.eq(span_id));
         }
         if let Some(ref direction) = filter.direction {
-            query = query.filter(monitor_events::direction.eq(direction));
+            query = query.filter(monitor_events::direction.eq(direction.as_str()));
         }
         if let Some(ref after) = filter.after {
             query = query.filter(monitor_events::timestamp.gt(after));
@@ -323,7 +325,7 @@ pub enum MonitorStoreError {
 mod tests {
     use super::*;
     use crate::event::{MonitorEvent, MonitorEventKind};
-    use crate::filter::MonitorFilter;
+    use crate::filter::{EventKindTag, MonitorFilter};
 
     fn make_provider_request_event(provider: &str) -> MonitorEvent {
         MonitorEvent::new(MonitorEventKind::ProviderRequest {
@@ -378,7 +380,7 @@ mod tests {
         store.insert(&make_mcp_request_event("filesystem")).unwrap();
 
         let filter = MonitorFilter {
-            kinds: Some(vec!["provider_request".into()]),
+            kinds: Some(vec![EventKindTag::ProviderRequest]),
             ..Default::default()
         };
         let results = store.query(&filter).unwrap();
@@ -387,7 +389,7 @@ mod tests {
 
         // Test multiple kinds
         let filter = MonitorFilter {
-            kinds: Some(vec!["provider_request".into(), "mcp_request".into()]),
+            kinds: Some(vec![EventKindTag::ProviderRequest, EventKindTag::McpRequest]),
             ..Default::default()
         };
         let results = store.query(&filter).unwrap();
@@ -525,7 +527,7 @@ mod tests {
         // Count with a filter
         store.insert(&make_mcp_request_event("filesystem")).unwrap();
         let filter = MonitorFilter {
-            kinds: Some(vec!["provider_request".into()]),
+            kinds: Some(vec![EventKindTag::ProviderRequest]),
             ..Default::default()
         };
         let count = store.count(&filter).unwrap();

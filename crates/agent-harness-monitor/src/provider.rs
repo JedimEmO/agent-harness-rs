@@ -128,18 +128,135 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
     }
 
     async fn generate_text(&self, request: TextGenRequest) -> Result<TextGenResponse, AiError> {
-        self.inner.generate_text(request).await
+        let provider_name = self.inner.capabilities().provider_name;
+        let span_id = uuid::Uuid::new_v4().to_string();
+        self.sink.emit(
+            MonitorEvent::new(MonitorEventKind::ProviderRequest {
+                provider: provider_name.clone(),
+                system_prompt: request.system_prompt.clone(),
+                message_count: 1,
+                tool_count: 0,
+                messages: vec![ConversationMessage::user_text(&request.prompt)],
+                tools: vec![],
+            })
+            .with_span(&span_id),
+        );
+        let start = Instant::now();
+        let result = self.inner.generate_text(request).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+        match &result {
+            Ok(resp) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
+                        provider: provider_name,
+                        response: ConversationResponse::Text(resp.text.clone()),
+                        duration_ms,
+                        input_tokens: None,
+                        output_tokens: resp.tokens_used,
+                    })
+                    .with_span(&span_id),
+                );
+            }
+            Err(e) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderError {
+                        provider: provider_name,
+                        error: e.to_string(),
+                    })
+                    .with_span(&span_id),
+                );
+            }
+        }
+        result
     }
 
     async fn generate_image(&self, request: ImageGenRequest) -> Result<ImageGenResponse, AiError> {
-        self.inner.generate_image(request).await
+        let provider_name = self.inner.capabilities().provider_name;
+        let span_id = uuid::Uuid::new_v4().to_string();
+        self.sink.emit(
+            MonitorEvent::new(MonitorEventKind::ProviderRequest {
+                provider: provider_name.clone(),
+                system_prompt: None,
+                message_count: 1,
+                tool_count: 0,
+                messages: vec![ConversationMessage::user_text(&request.prompt)],
+                tools: vec![],
+            })
+            .with_span(&span_id),
+        );
+        let start = Instant::now();
+        let result = self.inner.generate_image(request).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+        match &result {
+            Ok(_) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
+                        provider: provider_name,
+                        response: ConversationResponse::Text("[image generated]".into()),
+                        duration_ms,
+                        input_tokens: None,
+                        output_tokens: None,
+                    })
+                    .with_span(&span_id),
+                );
+            }
+            Err(e) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderError {
+                        provider: provider_name,
+                        error: e.to_string(),
+                    })
+                    .with_span(&span_id),
+                );
+            }
+        }
+        result
     }
 
     async fn analyze_image(
         &self,
         request: ImageAnalysisRequest,
     ) -> Result<ImageAnalysisResponse, AiError> {
-        self.inner.analyze_image(request).await
+        let provider_name = self.inner.capabilities().provider_name;
+        let span_id = uuid::Uuid::new_v4().to_string();
+        self.sink.emit(
+            MonitorEvent::new(MonitorEventKind::ProviderRequest {
+                provider: provider_name.clone(),
+                system_prompt: None,
+                message_count: 1,
+                tool_count: 0,
+                messages: vec![ConversationMessage::user_text(&request.prompt)],
+                tools: vec![],
+            })
+            .with_span(&span_id),
+        );
+        let start = Instant::now();
+        let result = self.inner.analyze_image(request).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+        match &result {
+            Ok(resp) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
+                        provider: provider_name,
+                        response: ConversationResponse::Text(resp.description.clone()),
+                        duration_ms,
+                        input_tokens: None,
+                        output_tokens: None,
+                    })
+                    .with_span(&span_id),
+                );
+            }
+            Err(e) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderError {
+                        provider: provider_name,
+                        error: e.to_string(),
+                    })
+                    .with_span(&span_id),
+                );
+            }
+        }
+        result
     }
 }
 

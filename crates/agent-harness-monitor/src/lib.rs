@@ -27,7 +27,7 @@ mod mcp;
 mod live;
 
 pub use event::{MonitorEvent, MonitorEventKind};
-pub use filter::MonitorFilter;
+pub use filter::{Direction, EventKindTag, MonitorFilter};
 pub use sink::MonitorSink;
 pub use store::{MonitorStore, MonitorStoreError, RetentionPolicy};
 pub use provider::MonitoredProvider;
