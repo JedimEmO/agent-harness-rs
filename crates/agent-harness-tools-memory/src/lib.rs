@@ -52,12 +52,7 @@ impl AgentTool for SaveMemoryTool {
         let key = arguments.get("key").and_then(|v| v.as_str()).unwrap_or("");
         let content = arguments.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let category_str = arguments.get("category").and_then(|v| v.as_str()).unwrap_or("fact");
-        let category = match category_str {
-            "preference" => MemoryCategory::Preference,
-            "instruction" => MemoryCategory::Instruction,
-            "context" => MemoryCategory::Context,
-            _ => MemoryCategory::Fact,
-        };
+        let category = category_str.parse().unwrap_or(MemoryCategory::Fact);
 
         match self.store.save(scope_id, key, content, category).await {
             Ok(_) => Ok(ToolExecResult::text(format!("Saved memory: '{}'", key))),
@@ -101,8 +96,19 @@ impl AgentTool for RecallMemoriesTool {
 
     async fn execute(&self, scope_id: &str, arguments: serde_json::Value) -> Result<ToolExecResult, AgentError> {
         let query = arguments.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let category_filter = arguments.get("category").and_then(|v| v.as_str()).map(|s| match s {
+            "preference" => MemoryCategory::Preference,
+            "instruction" => MemoryCategory::Instruction,
+            "context" => MemoryCategory::Context,
+            _ => MemoryCategory::Fact,
+        });
         match self.store.search(scope_id, query, 10).await {
             Ok(memories) => {
+                let memories = if let Some(cat) = category_filter {
+                    memories.into_iter().filter(|m| m.category == cat).collect()
+                } else {
+                    memories
+                };
                 if memories.is_empty() {
                     Ok(ToolExecResult::text("No relevant memories found."))
                 } else {

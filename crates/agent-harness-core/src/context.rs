@@ -32,10 +32,7 @@ impl ContextManager {
             .map(|p| match p {
                 ContentPart::Text { text } => self.estimate_tokens(text),
                 // Images are roughly 1000 tokens each (conservative estimate)
-                ContentPart::Image { data, .. } => {
-                    let _ = data;
-                    1000
-                }
+                ContentPart::Image { .. } => 1000,
                 // Audio: ~25 tokens per second at 16kHz 16-bit PCM (2 bytes/sample)
                 ContentPart::Audio { data, .. } => {
                     let samples = data.len() / 2;

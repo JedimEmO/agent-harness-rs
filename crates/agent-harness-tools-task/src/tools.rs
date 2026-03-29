@@ -56,11 +56,10 @@ impl AgentTool for CreateTaskTool {
         scope_id: &str,
         arguments: serde_json::Value,
     ) -> Result<ToolExecResult, AgentError> {
-        let description = arguments
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let description = match arguments.get("description").and_then(|v| v.as_str()) {
+            Some(d) if !d.is_empty() => d.to_string(),
+            _ => return Ok(ToolExecResult::text("Error: description is required")),
+        };
 
         let parent_id = arguments
             .get("parent_id")
@@ -86,13 +85,16 @@ impl AgentTool for CreateTaskTool {
             self.store.assign_task(scope_id, &task.id, assignee).await;
         }
 
+        // Re-fetch after mutations to get the updated version
+        let final_task = self.store.get_task(scope_id, &task.id).await.unwrap_or(task);
+
         let result = serde_json::json!({
-            "task_id": task.id,
-            "description": task.description,
-            "status": task.status.to_string(),
-            "depends_on": task.depends_on,
-            "assigned_to": task.assigned_to,
-            "parent_id": task.parent_id,
+            "task_id": final_task.id,
+            "description": final_task.description,
+            "status": final_task.status.to_string(),
+            "depends_on": final_task.depends_on,
+            "assigned_to": final_task.assigned_to,
+            "parent_id": final_task.parent_id,
         });
         Ok(ToolExecResult::Completed(result))
     }
@@ -147,10 +149,10 @@ impl AgentTool for UpdateTaskTool {
         scope_id: &str,
         arguments: serde_json::Value,
     ) -> Result<ToolExecResult, AgentError> {
-        let task_id = arguments
-            .get("task_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+            Some(id) if !id.is_empty() => id,
+            _ => return Ok(ToolExecResult::text("Error: task_id is required")),
+        };
 
         // Update status if provided
         if let Some(status_str) = arguments.get("status").and_then(|v| v.as_str()) {

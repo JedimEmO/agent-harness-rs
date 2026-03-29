@@ -8,7 +8,6 @@ use crate::types::{StreamingContentBlock, StreamingDelta, StreamingEvent};
 pub struct StreamAccumulator {
     text: String,
     pending_tools: Vec<PendingToolCall>,
-    current_block_index: Option<usize>,
 }
 
 struct PendingToolCall {
@@ -22,7 +21,6 @@ impl StreamAccumulator {
         Self {
             text: String::new(),
             pending_tools: Vec::new(),
-            current_block_index: None,
         }
     }
 
@@ -31,7 +29,6 @@ impl StreamAccumulator {
 
         match event.event_type.as_str() {
             "content_block_start" => {
-                self.current_block_index = event.index;
                 if let Some(ref block) = event.content_block {
                     match block {
                         StreamingContentBlock::Text { .. } => {
@@ -65,9 +62,7 @@ impl StreamAccumulator {
                     }
                 }
             }
-            "content_block_stop" => {
-                self.current_block_index = None;
-            }
+            "content_block_stop" => {}
             "message_delta" => {
                 if let Some(ref usage) = event.usage {
                     out.push(Ok(StreamEvent::Usage {
@@ -124,38 +119,20 @@ pub fn parse_sse_stream(
         use tokio_stream::StreamExt;
 
         let mut accumulator = StreamAccumulator::new();
-        let mut buffer = String::new();
+        let mut lines = std::pin::pin!(agent_harness_core::sse::parse_sse_lines(byte_stream));
 
-        let mut byte_stream = std::pin::pin!(byte_stream);
-
-        while let Some(chunk_result) = byte_stream.next().await {
-            let chunk = match chunk_result {
-                Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        yield Err(AiError::ProviderError(format!("UTF-8 decode error: {}", e)));
-                        return;
-                    }
-                },
+        while let Some(line_result) = lines.next().await {
+            let data = match line_result {
+                Ok(d) => d,
                 Err(e) => {
-                    yield Err(AiError::ProviderError(format!("Stream error: {}", e)));
+                    yield Err(e);
                     return;
                 }
             };
 
-            buffer.push_str(&chunk);
-
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
-                    if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
-                        for stream_event in accumulator.process_event(&event) {
-                            yield stream_event;
-                        }
-                    }
+            if let Ok(event) = serde_json::from_str::<StreamingEvent>(&data) {
+                for stream_event in accumulator.process_event(&event) {
+                    yield stream_event;
                 }
             }
         }

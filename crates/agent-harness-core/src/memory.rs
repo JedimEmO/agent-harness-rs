@@ -12,6 +12,30 @@ pub enum MemoryCategory {
     Context,
 }
 
+impl std::fmt::Display for MemoryCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryCategory::Fact => write!(f, "fact"),
+            MemoryCategory::Preference => write!(f, "preference"),
+            MemoryCategory::Instruction => write!(f, "instruction"),
+            MemoryCategory::Context => write!(f, "context"),
+        }
+    }
+}
+
+impl std::str::FromStr for MemoryCategory {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "fact" => Ok(MemoryCategory::Fact),
+            "preference" => Ok(MemoryCategory::Preference),
+            "instruction" => Ok(MemoryCategory::Instruction),
+            "context" => Ok(MemoryCategory::Context),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub id: String,

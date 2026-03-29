@@ -11,6 +11,23 @@ pub enum AiError {
     RateLimited,
 }
 
+impl AiError {
+    /// Map any HTTP-like error (e.g. `reqwest::Error`) into an [`AiError::ProviderError`].
+    pub fn http_error(e: impl std::fmt::Display) -> Self {
+        AiError::ProviderError(format!("HTTP error: {}", e))
+    }
+
+    /// Map an API error status code and body into the appropriate [`AiError`] variant.
+    ///
+    /// Returns [`AiError::RateLimited`] for HTTP 429, otherwise [`AiError::ProviderError`].
+    pub fn api_status(status: u16, body: &str, provider: &str) -> Self {
+        if status == 429 {
+            return AiError::RateLimited;
+        }
+        AiError::ProviderError(format!("{} API error ({}): {}", provider, status, body))
+    }
+}
+
 /// Errors from agent operations.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {

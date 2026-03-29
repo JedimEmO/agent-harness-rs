@@ -54,6 +54,28 @@ pub struct SessionMessage {
     pub created_at: String,
 }
 
+impl SessionMessage {
+    pub fn new(session_id: impl Into<String>, role: MessageRole, content: MessageContent) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.into(),
+            role,
+            content,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+impl ToolResultRecord {
+    pub fn from_call(tc: &crate::provider::ToolCall, content: serde_json::Value) -> Self {
+        Self {
+            call_id: tc.id.clone(),
+            tool_name: tc.name.clone(),
+            content,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Conversions between session and provider types
 // ---------------------------------------------------------------------------

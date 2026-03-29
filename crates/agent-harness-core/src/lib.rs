@@ -29,6 +29,7 @@ mod config;
 mod agent;
 mod guardrail;
 mod live;
+pub mod sse;
 
 // --- Errors ---
 pub use error::{AgentError, AiError};

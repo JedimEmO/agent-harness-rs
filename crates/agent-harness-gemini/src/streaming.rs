@@ -11,106 +11,86 @@ pub fn parse_gemini_sse_stream(
     async_stream::stream! {
         use tokio_stream::StreamExt;
 
-        let mut buffer = String::new();
         let mut full_text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tool_call_counter = 0u32;
 
-        let mut byte_stream = std::pin::pin!(byte_stream);
+        let mut lines = std::pin::pin!(agent_harness_core::sse::parse_sse_lines(byte_stream));
 
-        while let Some(chunk_result) = byte_stream.next().await {
-            let chunk = match chunk_result {
-                Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        yield Err(AiError::ProviderError(format!("UTF-8 decode error: {}", e)));
-                        return;
-                    }
-                },
+        while let Some(line_result) = lines.next().await {
+            let data = match line_result {
+                Ok(d) => d,
                 Err(e) => {
-                    yield Err(AiError::ProviderError(format!("Stream error: {}", e)));
+                    yield Err(e);
                     return;
                 }
             };
 
-            buffer.push_str(&chunk);
-
-            // Gemini SSE format: "data: {json}\r\n\r\n"
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if !line.starts_with("data: ") {
+            let response: GeminiResponse = match serde_json::from_str(&data) {
+                Ok(r) => r,
+                Err(e) => {
+                    trace!(error = %e, "failed to parse Gemini SSE chunk, skipping");
                     continue;
                 }
+            };
 
-                let data = &line[6..];
-                let response: GeminiResponse = match serde_json::from_str(data) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        trace!(error = %e, "failed to parse Gemini SSE chunk, skipping");
-                        continue;
+            // Process usage metadata
+            if let Some(usage) = &response.usage_metadata {
+                yield Ok(StreamEvent::Usage {
+                    input_tokens: usage.prompt_token_count,
+                    output_tokens: usage.candidates_token_count,
+                });
+            }
+
+            // Process candidate content
+            for candidate in &response.candidates {
+                if let Some(content) = &candidate.content {
+                    for part in &content.parts {
+                        match part {
+                            GeminiPart::Text { text } => {
+                                full_text.push_str(text);
+                                trace!(len = text.len(), "stream: text delta");
+                                yield Ok(StreamEvent::TextDelta(text.clone()));
+                            }
+                            GeminiPart::FunctionCall { function_call } => {
+                                tool_call_counter += 1;
+                                let call = ToolCall {
+                                    id: format!("call_{}", tool_call_counter),
+                                    name: function_call.name.clone(),
+                                    arguments: function_call.args.clone(),
+                                };
+                                debug!(tool_name = %call.name, "stream: function call");
+                                tool_calls.push(call);
+                            }
+                            _ => {}
+                        }
                     }
-                };
-
-                // Process usage metadata
-                if let Some(usage) = &response.usage_metadata {
-                    yield Ok(StreamEvent::Usage {
-                        input_tokens: usage.prompt_token_count,
-                        output_tokens: usage.candidates_token_count,
-                    });
                 }
 
-                // Process candidate content
-                for candidate in &response.candidates {
-                    if let Some(content) = &candidate.content {
-                        for part in &content.parts {
-                            match part {
-                                GeminiPart::Text { text } => {
-                                    full_text.push_str(text);
-                                    trace!(len = text.len(), "stream: text delta");
-                                    yield Ok(StreamEvent::TextDelta(text.clone()));
-                                }
-                                GeminiPart::FunctionCall { function_call } => {
-                                    tool_call_counter += 1;
-                                    let call = ToolCall {
-                                        id: format!("call_{}", tool_call_counter),
-                                        name: function_call.name.clone(),
-                                        arguments: function_call.args.clone(),
-                                    };
-                                    debug!(tool_name = %call.name, "stream: function call");
-                                    tool_calls.push(call);
-                                }
-                                _ => {}
-                            }
-                        }
+                // Check finish reason — any non-null finishReason triggers completion
+                if candidate.finish_reason.is_some() {
+                    if !full_text.is_empty() {
+                        debug!(text_len = full_text.len(), "stream done with text");
+                        yield Ok(StreamEvent::TextComplete(std::mem::take(&mut full_text)));
                     }
-
-                    // Check finish reason
-                    if candidate.finish_reason.as_deref() == Some("STOP")
-                        || candidate.finish_reason.as_deref() == Some("MAX_TOKENS")
-                    {
-                        if !tool_calls.is_empty() {
-                            debug!(count = tool_calls.len(), "stream done with tool calls");
-                            yield Ok(StreamEvent::ToolCalls(std::mem::take(&mut tool_calls)));
-                        } else if !full_text.is_empty() {
-                            debug!(text_len = full_text.len(), "stream done with text");
-                            yield Ok(StreamEvent::TextComplete(std::mem::take(&mut full_text)));
-                        }
-                        yield Ok(StreamEvent::Done);
-                        return;
+                    if !tool_calls.is_empty() {
+                        debug!(count = tool_calls.len(), "stream done with tool calls");
+                        yield Ok(StreamEvent::ToolCalls(std::mem::take(&mut tool_calls)));
                     }
+                    yield Ok(StreamEvent::Done);
+                    return;
                 }
             }
         }
 
         // Stream ended without explicit STOP — emit what we have
+        if !full_text.is_empty() {
+            warn!(text_len = full_text.len(), "stream ended without STOP, emitting text");
+            yield Ok(StreamEvent::TextComplete(full_text));
+        }
         if !tool_calls.is_empty() {
             warn!(count = tool_calls.len(), "stream ended without STOP, emitting tool calls");
             yield Ok(StreamEvent::ToolCalls(tool_calls));
-        } else if !full_text.is_empty() {
-            warn!(text_len = full_text.len(), "stream ended without STOP, emitting text");
-            yield Ok(StreamEvent::TextComplete(full_text));
         }
         yield Ok(StreamEvent::Done);
     }

@@ -39,7 +39,7 @@ impl MemoryStore for SqliteMemoryStore {
         let scope_id = scope_id.to_string();
         let key = key.to_string();
         let content = content.to_string();
-        let cat_str = category_to_str(category).to_string();
+        let cat_str = category.to_string();
 
         let row = with_conn(&self.pool, move |conn| {
             let now = chrono::Utc::now().to_rfc3339();
@@ -134,7 +134,7 @@ impl MemoryStore for SqliteMemoryStore {
         category: Option<MemoryCategory>,
     ) -> Result<Vec<Memory>, AgentError> {
         let scope_id = scope_id.to_string();
-        let cat_str = category.map(|c| category_to_str(c).to_string());
+        let cat_str = category.map(|c| c.to_string());
 
         let rows = with_conn(&self.pool, move |conn| {
             let mut query = agent_memories::table
@@ -167,32 +167,13 @@ impl MemoryStore for SqliteMemoryStore {
     }
 }
 
-fn category_to_str(cat: MemoryCategory) -> &'static str {
-    match cat {
-        MemoryCategory::Fact => "fact",
-        MemoryCategory::Preference => "preference",
-        MemoryCategory::Instruction => "instruction",
-        MemoryCategory::Context => "context",
-    }
-}
-
-fn str_to_category(s: &str) -> MemoryCategory {
-    match s {
-        "fact" => MemoryCategory::Fact,
-        "preference" => MemoryCategory::Preference,
-        "instruction" => MemoryCategory::Instruction,
-        "context" => MemoryCategory::Context,
-        _ => MemoryCategory::Fact,
-    }
-}
-
 fn row_to_memory(row: MemoryRow) -> Memory {
     Memory {
         id: row.id,
         scope_id: row.scope_id,
         key: row.key,
         content: row.content,
-        category: str_to_category(&row.category),
+        category: row.category.parse().unwrap_or(MemoryCategory::Fact),
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
@@ -300,14 +281,14 @@ mod tests {
     #[test]
     fn category_roundtrip() {
         for cat in [MemoryCategory::Fact, MemoryCategory::Preference, MemoryCategory::Instruction, MemoryCategory::Context] {
-            let s = category_to_str(cat);
-            let back = str_to_category(s);
+            let s = cat.to_string();
+            let back: MemoryCategory = s.parse().unwrap();
             assert_eq!(cat, back);
         }
     }
 
     #[test]
     fn unknown_category_defaults_to_fact() {
-        assert_eq!(str_to_category("bogus"), MemoryCategory::Fact);
+        assert_eq!("bogus".parse::<MemoryCategory>().unwrap_or(MemoryCategory::Fact), MemoryCategory::Fact);
     }
 }

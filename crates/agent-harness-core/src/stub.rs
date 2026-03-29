@@ -26,9 +26,10 @@ impl AiProvider for StubProvider {
             }
         }).unwrap_or_default();
 
+        let end = context.char_indices().nth(200).map_or(context.len(), |(i, _)| i);
         Ok(ConversationResponse::Text(format!(
             "[STUB] Response to: {}",
-            &context[..context.len().min(200)]
+            &context[..end]
         )))
     }
 

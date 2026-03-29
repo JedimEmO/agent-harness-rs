@@ -156,11 +156,6 @@ impl ToolRegistry {
         self.tools.write().await.push(tool);
     }
 
-    /// Register a tool from a boxed trait object (convenience for migration).
-    pub async fn register_boxed(&self, tool: Box<dyn AgentTool>) {
-        self.tools.write().await.push(Arc::from(tool));
-    }
-
     /// Unregister a tool by name. Returns true if a tool was removed.
     pub async fn unregister(&self, name: &str) -> bool {
         let mut tools = self.tools.write().await;

@@ -207,13 +207,11 @@ impl AgentRunner {
         let mut plan_approved = request.auto_approve;
 
         // 1. Persist the user message
-        let user_msg = SessionMessage {
-            id: Uuid::new_v4().to_string(),
-            session_id: session_id.to_string(),
-            role: MessageRole::User,
-            content: MessageContent::Text(request.user_message.clone()),
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
+        let user_msg = SessionMessage::new(
+            session_id,
+            MessageRole::User,
+            MessageContent::Text(request.user_message.clone()),
+        );
         self.session_store.append_message(&user_msg).await?;
 
         // 2. Load history once and maintain in-memory
@@ -316,13 +314,11 @@ impl AgentRunner {
                     .map(ToolCallRecord::from)
                     .collect();
 
-                let tc_msg = SessionMessage {
-                    id: Uuid::new_v4().to_string(),
-                    session_id: session_id.to_string(),
-                    role: MessageRole::Assistant,
-                    content: MessageContent::ToolCalls(call_records),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                };
+                let tc_msg = SessionMessage::new(
+                    session_id,
+                    MessageRole::Assistant,
+                    MessageContent::ToolCalls(call_records),
+                );
                 self.session_store.append_message(&tc_msg).await?;
                 local_messages.push(tc_msg);
 
@@ -343,13 +339,11 @@ impl AgentRunner {
                     result_records.push(record);
                 }
 
-                let tr_msg = SessionMessage {
-                    id: Uuid::new_v4().to_string(),
-                    session_id: session_id.to_string(),
-                    role: MessageRole::Tool,
-                    content: MessageContent::ToolResults(result_records),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                };
+                let tr_msg = SessionMessage::new(
+                    session_id,
+                    MessageRole::Tool,
+                    MessageContent::ToolResults(result_records),
+                );
                 self.session_store.append_message(&tr_msg).await?;
                 local_messages.push(tr_msg);
             } else {
@@ -396,14 +390,12 @@ impl AgentRunner {
                     }
                 }
 
-                let msg_id = Uuid::new_v4().to_string();
-                let assistant_msg = SessionMessage {
-                    id: msg_id.clone(),
-                    session_id: session_id.to_string(),
-                    role: MessageRole::Assistant,
-                    content: MessageContent::Text(text.clone()),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                };
+                let assistant_msg = SessionMessage::new(
+                    session_id,
+                    MessageRole::Assistant,
+                    MessageContent::Text(text.clone()),
+                );
+                let msg_id = assistant_msg.id.clone();
                 self.session_store.append_message(&assistant_msg).await?;
 
                 let _ = request
@@ -587,11 +579,7 @@ impl AgentRunner {
             None => {
                 let err_msg = format!("Unknown tool: {}", tc.name);
                 warn!(session_id = %session_id, tool_name = %tc.name, "unknown tool requested by AI");
-                return Ok(ToolResultRecord {
-                    call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    content: serde_json::Value::String(err_msg),
-                });
+                return Ok(ToolResultRecord::from_call(tc, serde_json::Value::String(err_msg)));
             }
         };
 
@@ -609,11 +597,7 @@ impl AgentRunner {
                     recoverable: true,
                 })
                 .await;
-            return Ok(ToolResultRecord {
-                call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                content: serde_json::Value::String(err_msg),
-            });
+            return Ok(ToolResultRecord::from_call(tc, serde_json::Value::String(err_msg)));
         }
 
         let permission = tool.permission();
@@ -662,13 +646,10 @@ impl AgentRunner {
                         duration_ms: 0,
                     })
                     .await;
-                return Ok(ToolResultRecord {
-                    call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    content: serde_json::Value::String(
-                        "Tool execution was denied by the user.".to_string(),
-                    ),
-                });
+                return Ok(ToolResultRecord::from_call(
+                    tc,
+                    serde_json::Value::String("Tool execution was denied by the user.".to_string()),
+                ));
             }
         } else if permission == ToolPermission::RequiresApproval {
             info!(session_id = %session_id, tool_name = %tc.name, call_id = %tc.id, "auto-approving tool (plan approved)");
@@ -711,11 +692,7 @@ impl AgentRunner {
                         duration_ms,
                     })
                     .await;
-                Ok(ToolResultRecord {
-                    call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    content,
-                })
+                Ok(ToolResultRecord::from_call(tc, content))
             }
             Ok(ToolExecResult::NeedsInteraction(interaction_request)) => {
                 let interaction_id = Uuid::new_v4().to_string();
@@ -759,11 +736,7 @@ impl AgentRunner {
                     })
                     .await;
 
-                Ok(ToolResultRecord {
-                    call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    content: serde_json::Value::String(response_text),
-                })
+                Ok(ToolResultRecord::from_call(tc, serde_json::Value::String(response_text)))
             }
             Err(e) => {
                 let err_msg = format!("Tool error: {}", e);
@@ -776,11 +749,7 @@ impl AgentRunner {
                         duration_ms,
                     })
                     .await;
-                Ok(ToolResultRecord {
-                    call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    content: serde_json::Value::String(err_msg),
-                })
+                Ok(ToolResultRecord::from_call(tc, serde_json::Value::String(err_msg)))
             }
         }
     }
