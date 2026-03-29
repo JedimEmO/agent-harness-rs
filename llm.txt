@@ -1,0 +1,611 @@
+# agent-harness-rs
+
+> Rust framework for building LLM-powered agent applications with multi-provider support, tool calling, bidirectional live streaming, MCP integration, and full observability.
+
+## Architecture
+
+```
+agent-harness-core          -- Traits, runner, event system, types
+  agent-harness-context     -- Token-aware context pipeline (strategies, budgets)
+  agent-harness-anthropic   -- Anthropic Messages API provider
+  agent-harness-openai      -- OpenAI Chat Completions provider (+ OpenRouter, vLLM, Ollama)
+  agent-harness-gemini      -- Google Gemini API + Live WebSocket bidirectional streaming
+  agent-harness-mcp         -- MCP protocol client (bridges MCP tools into agent tool registry)
+  agent-harness-sqlite      -- Diesel SQLite persistence for sessions + memories
+  agent-harness-monitor     -- Observability: captures all traffic to SQLite with real-time streaming
+  agent-harness-tools-*     -- Built-in tools (interaction, memory, task tracking)
+```
+
+All crates depend on `agent-harness-core` for shared traits. Providers, tools, and storage are pluggable via traits.
+
+---
+
+## Quick Start
+
+```rust
+use agent_harness_core::*;
+use agent_harness_anthropic::AnthropicProvider;
+use agent_harness_sqlite::{init_db, SqliteSessionStore, SqliteMemoryStore};
+use agent_harness_context::{ContextPipeline, CharEstimateCounter};
+use agent_harness_context::strategies::{PriorityRetention, TruncateOldest};
+use agent_harness_tools_interaction::*;
+use agent_harness_tools_task::*;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() {
+    // 1. Provider
+    let provider: Arc<dyn AiProvider> = Arc::new(
+        AnthropicProvider::new("sk-...".into(), "claude-sonnet-4-6".into())
+    );
+
+    // 2. Tools
+    let task_store = TaskStore::new();
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(AskUserTool)).await;
+    registry.register(Arc::new(CreateTaskTool::new(task_store.clone()))).await;
+    registry.register(Arc::new(UpdateTaskTool::new(task_store.clone()))).await;
+    registry.register(Arc::new(ListTasksTool::new(task_store))).await;
+
+    // 3. Storage
+    let pool = init_db("data/agent.db").unwrap();
+    let session_store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(pool.clone()));
+    let memory_store: Arc<dyn MemoryStore> = Arc::new(SqliteMemoryStore::new(pool));
+
+    // 4. Context pipeline (optional)
+    let pipeline = Arc::new(ContextPipeline::builder()
+        .token_counter(CharEstimateCounter::new(4))
+        .strategy(PriorityRetention::new())
+        .strategy(TruncateOldest::new())
+        .build());
+
+    // 5. Runner
+    let runner = AgentRunner::new(
+        provider, Arc::new(registry), session_store, memory_store,
+        AgentConfig::default(),
+    ).with_context_pipeline(pipeline);
+
+    // 6. Run a turn
+    let session = runner.create_session("my-app").await.unwrap();
+    let (request, channels) = TurnRequest::new(
+        &session.id, "my-app", "Hello!", "You are a helpful assistant.",
+    );
+
+    // Consume events in a separate task
+    tokio::spawn(async move {
+        let mut rx = channels.event_rx;
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::TextDelta { text } => print!("{}", text),
+                AgentEvent::TurnComplete => break,
+                _ => {}
+            }
+        }
+    });
+
+    runner.run_turn(request).await.unwrap();
+}
+```
+
+---
+
+## Core Traits
+
+### AiProvider -- LLM backend abstraction
+
+```rust
+#[async_trait]
+pub trait AiProvider: Send + Sync {
+    async fn converse(&self, request: ConversationRequest) -> Result<ConversationResponse, AiError>;
+    fn capabilities(&self) -> ProviderCapabilities;
+    // Default implementations (override for full support):
+    async fn generate_text(&self, request: TextGenRequest) -> Result<TextGenResponse, AiError>;
+    async fn generate_image(&self, request: ImageGenRequest) -> Result<ImageGenResponse, AiError>;
+    async fn analyze_image(&self, request: ImageAnalysisRequest) -> Result<ImageAnalysisResponse, AiError>;
+    async fn converse_stream(&self, request: ConversationRequest) -> Result<AiStream, AiError>;
+}
+```
+
+Implementations: `AnthropicProvider`, `OpenAiProvider`, `GeminiProvider`, `StubProvider` (testing)
+
+### AgentTool -- Tool that agents can call
+
+```rust
+#[async_trait]
+pub trait AgentTool: Send + Sync {
+    fn name(&self) -> &str;
+    fn definition(&self) -> ToolDefinition;
+    fn permission(&self) -> ToolPermission; // AutoExecute or RequiresApproval
+    async fn execute(&self, scope_id: &str, arguments: serde_json::Value) -> Result<ToolExecResult, AgentError>;
+}
+```
+
+Return `ToolExecResult::Completed(value)` for immediate results, or `ToolExecResult::NeedsInteraction(request)` to prompt the user.
+
+### SessionStore -- Conversation persistence
+
+```rust
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    async fn create_session(&self, scope_id: &str) -> Result<Session, AgentError>;
+    async fn get_session(&self, id: &str) -> Result<Option<Session>, AgentError>;
+    async fn list_sessions(&self, scope_id: &str) -> Result<Vec<Session>, AgentError>;
+    async fn update_title(&self, id: &str, title: &str) -> Result<(), AgentError>;
+    async fn append_message(&self, msg: &SessionMessage) -> Result<(), AgentError>;
+    async fn get_messages(&self, session_id: &str) -> Result<Vec<SessionMessage>, AgentError>;
+    async fn delete_session(&self, id: &str) -> Result<(), AgentError>;
+}
+```
+
+Implementation: `SqliteSessionStore` (agent-harness-sqlite)
+
+### MemoryStore -- Long-term memory persistence
+
+```rust
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    async fn save(&self, scope_id: &str, key: &str, content: &str, category: MemoryCategory) -> Result<Memory, AgentError>;
+    async fn search(&self, scope_id: &str, query: &str, limit: usize) -> Result<Vec<Memory>, AgentError>;
+    async fn list(&self, scope_id: &str, category: Option<MemoryCategory>) -> Result<Vec<Memory>, AgentError>;
+    async fn delete(&self, id: &str) -> Result<bool, AgentError>;
+}
+```
+
+Categories: `Fact`, `Preference`, `Instruction`, `Context`
+
+Implementation: `SqliteMemoryStore` (agent-harness-sqlite)
+
+### LiveProvider -- Bidirectional real-time sessions (Gemini Live)
+
+```rust
+#[async_trait]
+pub trait LiveProvider: Send + Sync {
+    async fn connect_live(&self, config: LiveSessionConfig) -> Result<LiveSession, AiError>;
+}
+
+pub struct LiveSession {
+    pub tx: mpsc::Sender<LiveClientEvent>,   // Send audio/text/tool results to model
+    pub rx: mpsc::Receiver<LiveServerEvent>,  // Receive audio/transcripts/tool calls from model
+}
+```
+
+Implementation: `GeminiProvider` (with `live` feature)
+
+### OutputGuardrail -- Validate/modify/block LLM output
+
+```rust
+#[async_trait]
+pub trait OutputGuardrail: Send + Sync {
+    fn name(&self) -> &str;
+    async fn validate(&self, output: &str, context: &GuardrailContext) -> GuardrailResult;
+}
+
+pub enum GuardrailResult {
+    Pass,
+    Modify(String),   // Replace the output
+    Block(String),     // Reject with reason
+}
+```
+
+---
+
+## AgentRunner -- The Main Agent Loop
+
+```rust
+pub struct AgentRunner {
+    // Constructed via:
+    pub fn new(
+        ai_provider: Arc<dyn AiProvider>,
+        tool_registry: Arc<ToolRegistry>,
+        session_store: Arc<dyn SessionStore>,
+        memory_store: Arc<dyn MemoryStore>,
+        config: AgentConfig,
+    ) -> Self;
+
+    pub fn add_guardrail(&mut self, guardrail: Arc<dyn OutputGuardrail>);
+    pub fn with_context_pipeline(self, pipeline: Arc<ContextPipeline>) -> Self;
+    pub async fn create_session(&self, scope_id: &str) -> Result<Session, AgentError>;
+    pub async fn run_turn(&self, request: TurnRequest) -> Result<(), AgentError>;
+}
+```
+
+### TurnRequest -- How to invoke a turn
+
+```rust
+let (request, channels) = TurnRequest::new(
+    session_id, scope_id, user_message, system_prompt,
+);
+
+// Optional builder methods:
+let request = request
+    .auto_approve(true)              // Skip approval gates for RequiresApproval tools
+    .cancel_rx(cancel_receiver)      // Cancellation token
+    .tool_filter(|name| name != "dangerous"); // Restrict available tools
+
+// TurnChannels returned:
+// channels.event_rx    -- mpsc::Receiver<AgentEvent> (consume in spawned task)
+// channels.interaction_tx -- mpsc::Sender<(String, InteractionResponse)>
+// channels.approval_tx    -- mpsc::Sender<(String, bool)>
+```
+
+### AgentConfig
+
+```rust
+pub struct AgentConfig {
+    pub max_tool_rounds: usize,          // Default: 20
+    pub max_context_tokens: usize,       // Default: 100,000
+    pub chars_per_token_estimate: usize,  // Default: 4
+    pub tool_timeout_secs: Option<u64>,   // Default: None (no timeout)
+    pub max_tokens: Option<u32>,          // Default: Some(4096)
+    pub max_retries: usize,               // Default: 3
+    pub retry_base_delay_ms: u64,         // Default: 1000
+}
+```
+
+### Turn Execution Flow
+
+1. User message persisted to SessionStore
+2. Message history loaded
+3. Context prepared (truncated/pipelined to fit token budget)
+4. Provider called via streaming (`converse_stream`)
+5. If tool calls returned:
+   - Arguments validated against JSON Schema
+   - Permission checked (AutoExecute vs RequiresApproval)
+   - Tool executed with optional timeout
+   - Results stored, loop back to step 3
+6. If text response:
+   - Output guardrails run (Pass/Modify/Block)
+   - Response persisted and emitted as TextComplete
+7. TurnComplete event emitted
+
+---
+
+## Event System
+
+All events flow through `mpsc::Sender<AgentEvent>` from the runner to the consumer.
+
+```rust
+pub enum AgentEvent {
+    SessionStarted { session_id },
+    Thinking,
+    TextDelta { text },              // Streaming text chunks
+    TextComplete { message_id, text }, // Final text
+    AudioDelta { data, mime_type },   // Streaming audio
+    ToolCallStarted { call_id, tool_name, arguments, permission },
+    ToolCallCompleted { call_id, tool_name, result, duration_ms },
+    ToolApprovalNeeded { call_id, tool_name, arguments, description },
+    InteractionNeeded { interaction_id, request },
+    TurnComplete,
+    Error { message, recoverable },
+    MemorySaved { key, summary },
+    ContextTruncated { dropped_messages, remaining_messages },
+    UsageUpdate { input_tokens, output_tokens },
+    RetryAttempt { round, attempt, delay_ms },
+}
+```
+
+---
+
+## Providers
+
+### Anthropic
+
+```rust
+let provider = AnthropicProvider::new(api_key, "claude-sonnet-4-6".into());
+// Optional: .with_base_url("https://custom-endpoint.com".into())
+```
+
+Auth: `x-api-key` header. Supports: text, images, streaming, tool calling.
+
+### OpenAI (+ compatible APIs)
+
+```rust
+let provider = OpenAiProvider::new(api_key, "gpt-4o".into());
+// OpenRouter: .with_base_url("https://openrouter.ai/api".into())
+// Ollama:     .with_base_url("http://localhost:11434".into())
+// Azure:      .with_base_url("https://your.openai.azure.com".into())
+//             .with_extra_header("api-key".into(), key)
+```
+
+Auth: Bearer token. Supports: text, images, streaming, tool calling.
+
+### Gemini
+
+```rust
+let provider = GeminiProvider::new(api_key, "gemini-2.5-flash".into());
+```
+
+Auth: API key in query param. Supports: text, images, audio, streaming, tool calling.
+
+**Live API** (bidirectional WebSocket):
+
+```rust
+use agent_harness_core::{LiveProvider, LiveSessionConfig, LiveClientEvent, LiveServerEvent};
+
+let session = provider.connect_live(LiveSessionConfig {
+    system_prompt: Some("You are a voice assistant.".into()),
+    tools: vec![my_tool_definition],
+    voice: Some("Kore".into()),
+    response_modalities: vec!["AUDIO".into()],
+    input_audio_mime: "audio/pcm;rate=16000".into(),
+    output_audio_mime: "audio/pcm;rate=24000".into(),
+    enable_input_transcription: true,
+    enable_output_transcription: true,
+    context_window_compression: true,
+    ..Default::default()
+}).await?;
+
+// Send audio: session.tx.send(LiveClientEvent::AudioChunk { data, mime_type })
+// Send text:  session.tx.send(LiveClientEvent::TextMessage("hello".into()))
+// Send tool results: session.tx.send(LiveClientEvent::ToolResults(results))
+// Receive:    session.rx.recv() -> LiveServerEvent::AudioDelta / TranscriptDelta / ToolCalls / etc.
+```
+
+---
+
+## MCP Integration
+
+Bridge any MCP-compliant tool server into the agent tool registry:
+
+```rust
+use agent_harness_mcp::{McpClient, McpRegistry};
+
+// Spawn MCP server and connect
+let client = Arc::new(McpClient::stdio("npx", &["-y", "@modelcontextprotocol/server-filesystem"]).await?);
+
+// Discover tools and register them
+let tools = McpRegistry::discover(&client).await?;
+for tool in tools {
+    registry.register(Arc::new(tool)).await;
+}
+
+// Or with namespace prefix to avoid collisions:
+let tools = McpRegistry::discover_namespaced(&client, "fs").await?;
+// Tool "read_file" becomes "fs_read_file"
+```
+
+Each MCP tool becomes an `AgentTool` with `AutoExecute` permission. The `McpToolBridge` translates between the framework's `ToolDefinition`/`ToolExecResult` and MCP's JSON-RPC `tools/call`.
+
+---
+
+## Monitoring
+
+Wrap providers/transports with decorators to capture all traffic:
+
+```rust
+use agent_harness_monitor::{MonitorSink, MonitoredProvider, MonitoredMcpTransport, MonitorFilter, EventKindTag};
+
+// Create monitor sink (SQLite-backed)
+let sink = MonitorSink::new("data/monitor.db")?;
+
+// Wrap provider -- captures every converse/stream/generate call
+let monitored = MonitoredProvider::new(my_provider, sink.clone());
+let runner = AgentRunner::new(Arc::new(monitored), ...);
+
+// Wrap MCP transport -- captures JSON-RPC traffic
+let monitored_transport = MonitoredMcpTransport::new(transport, sink.clone(), "filesystem");
+let client = McpClient::with_transport(Arc::new(monitored_transport)).await?;
+
+// Query captured events
+let events = sink.query(&MonitorFilter {
+    kinds: Some(vec![EventKindTag::ProviderRequest]),
+    provider: Some("anthropic/claude-sonnet-4-6".into()),
+    ..Default::default()
+})?;
+
+// Real-time streaming
+let mut rx = sink.subscribe();
+tokio::spawn(async move {
+    while let Ok(event) = rx.recv().await {
+        println!("{}: {:?}", event.timestamp, event.kind_tag());
+    }
+});
+
+// Retention policy
+use agent_harness_monitor::RetentionPolicy;
+use std::time::Duration;
+sink.start_retention(RetentionPolicy {
+    max_age: Some(Duration::from_secs(24 * 3600)),
+    max_events: Some(100_000),
+    cleanup_interval: Duration::from_secs(300),
+});
+```
+
+---
+
+## Context Pipeline
+
+Composable strategies for managing conversation context within token budgets:
+
+```rust
+use agent_harness_context::{ContextPipeline, CharEstimateCounter};
+use agent_harness_context::strategies::*;
+
+let pipeline = ContextPipeline::builder()
+    .token_counter(CharEstimateCounter::new(4))  // 4 chars ~= 1 token
+    .strategy(PriorityRetention::new())           // Keep high-priority blocks
+    .strategy(TruncateOldest::new())              // Drop oldest when over budget
+    .build();
+
+// Strategies chain: each strategy's output feeds the next
+// Built-in: TruncateOldest, SlidingWindow, PriorityRetention, Summarize
+```
+
+---
+
+## Building Custom Tools
+
+```rust
+use agent_harness_core::*;
+use async_trait::async_trait;
+
+pub struct WeatherTool;
+
+#[async_trait]
+impl AgentTool for WeatherTool {
+    fn name(&self) -> &str { "get_weather" }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "get_weather".into(),
+            description: "Get current weather for a city.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "city": { "type": "string", "description": "City name" }
+                },
+                "required": ["city"]
+            }),
+        }
+    }
+
+    fn permission(&self) -> ToolPermission { ToolPermission::AutoExecute }
+
+    async fn execute(&self, _scope_id: &str, args: serde_json::Value) -> Result<ToolExecResult, AgentError> {
+        let city = args["city"].as_str().unwrap_or("unknown");
+        // ... call weather API ...
+        Ok(ToolExecResult::text(format!("72F and sunny in {}", city)))
+    }
+}
+```
+
+For tools that need user input, return `ToolExecResult::NeedsInteraction(InteractionRequest::AskUser { ... })`.
+
+---
+
+## Multi-Agent Patterns
+
+Use `SubAgentTool` to delegate work from one agent to another:
+
+```rust
+use agent_harness_core::{Agent, SubAgentTool};
+
+// Create a specialized agent runner
+let research_runner = AgentRunner::new(research_provider, research_tools, ...);
+
+// Wrap it as a tool for the main agent
+let delegate = SubAgentTool::new(Arc::new(research_runner))
+    .with_parameter_description("A research query to investigate");
+
+main_registry.register(Arc::new(delegate)).await;
+// Main agent can now call "agent_runner" tool to delegate to the research agent
+```
+
+---
+
+## Types Reference
+
+### Content Types
+
+```rust
+enum ContentPart {
+    Text { text: String },
+    Image { media_type: String, data: Vec<u8> },
+    Audio { media_type: String, data: Vec<u8> },
+}
+
+enum ConversationMessage {
+    User { content: Vec<ContentPart> },
+    Assistant { content: String },
+    AssistantToolCalls { tool_calls: Vec<ToolCall> },
+    ToolResults { results: Vec<ToolResult> },
+}
+
+struct ToolCall { pub id: String, pub name: String, pub arguments: serde_json::Value }
+struct ToolResult { pub call_id: String, pub content: serde_json::Value }
+struct ToolDefinition { pub name: String, pub description: String, pub parameters: serde_json::Value }
+```
+
+### Session/Memory Types
+
+```rust
+struct Session { pub id: String, pub scope_id: String, pub title: Option<String>, pub created_at: String, pub updated_at: String }
+struct SessionMessage { pub id: String, pub session_id: String, pub role: MessageRole, pub content: MessageContent, pub created_at: String }
+enum MessageRole { User, Assistant, System, Tool }
+enum MessageContent { Text(String), ToolCalls(Vec<ToolCallRecord>), ToolResults(Vec<ToolResultRecord>), Summary(String) }
+struct Memory { pub id: String, pub scope_id: String, pub key: String, pub content: String, pub category: MemoryCategory, pub created_at: String, pub updated_at: String }
+enum MemoryCategory { Fact, Preference, Instruction, Context }
+```
+
+### Interaction Types
+
+```rust
+enum InteractionRequest {
+    AskUser { question: String, context: Option<String> },
+    OfferOptions { question: String, options: Vec<InteractionOption>, allow_multiple: bool },
+    ConfirmAction { description: String, details: Option<String> },
+    ShowPlan { title: String, steps: Vec<PlanStep> },
+}
+
+enum InteractionResponse {
+    Text { text: String },
+    SelectedOptions { ids: Vec<String> },
+    Confirmed { approved: bool },
+    PlanApproved { approved: bool, modifications: Option<String> },
+}
+```
+
+### Live Session Types
+
+```rust
+enum LiveClientEvent {
+    AudioChunk { data: Vec<u8>, mime_type: String },
+    TextMessage(String),
+    VideoFrame { data: Vec<u8>, mime_type: String },
+    ToolResults(Vec<ToolResult>),
+    Interrupt,
+    Close,
+}
+
+enum LiveServerEvent {
+    AudioDelta { data: Vec<u8>, mime_type: String },
+    TranscriptDelta(String),
+    InputTranscript(String),
+    ToolCalls(Vec<ToolCall>),
+    TurnComplete,
+    Interrupted,
+    GoingAway { time_left: Option<Duration> },
+    SetupComplete,
+    Usage { input_tokens: u32, output_tokens: u32 },
+    SessionResumeToken(String),
+    Closed,
+    Error(String),
+}
+
+struct LiveSessionConfig {
+    pub system_prompt: Option<String>,
+    pub tools: Vec<ToolDefinition>,
+    pub voice: Option<String>,
+    pub response_modalities: Vec<String>,
+    pub input_audio_mime: String,        // "audio/pcm;rate=16000"
+    pub output_audio_mime: String,       // "audio/pcm;rate=24000"
+    pub vad: Option<VadConfig>,
+    pub enable_input_transcription: bool,
+    pub enable_output_transcription: bool,
+    pub thinking: Option<LiveThinkingConfig>,
+    pub context_window_compression: bool,
+    pub resume_handle: Option<String>,
+    pub initial_history: Vec<ConversationMessage>,
+}
+```
+
+### Error Types
+
+```rust
+enum AiError { ProviderError(String), InvalidRequest(String), NotSupported(String), RateLimited }
+enum AgentError { AiError(AiError), ToolError { tool_name, message }, SessionNotFound(String), StorageError(String), MaxRoundsExceeded(usize), ChannelClosed(String), SerializationError(serde_json::Error), Cancelled, Timeout { tool_name, timeout_secs }, ValidationError { tool_name, errors: Vec<String> } }
+```
+
+---
+
+## Integration Checklist
+
+1. Pick a provider (`AnthropicProvider`, `OpenAiProvider`, `GeminiProvider`)
+2. Register tools (built-in + custom domain tools + MCP bridges)
+3. Set up storage (SQLite via `init_db` or implement `SessionStore`/`MemoryStore`)
+4. Create `AgentRunner` with config
+5. Create session via `runner.create_session(scope_id)`
+6. For each user message: create `TurnRequest`, spawn event consumer, call `run_turn`
+7. Handle `InteractionNeeded` events (user prompts, confirmations, option selection)
+8. Handle `ToolApprovalNeeded` events if using `RequiresApproval` tools
+9. Optionally: add guardrails, context pipeline, monitoring, cancellation support
