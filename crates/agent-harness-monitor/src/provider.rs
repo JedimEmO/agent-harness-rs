@@ -144,6 +144,8 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
 }
 
 /// A stream wrapper that emits monitor events for each streamed item.
+// Unpin is safe because inner AiStream is Pin<Box<dyn Stream>> which is Unpin.
+impl Unpin for MonitoredStream {}
 struct MonitoredStream {
     inner: AiStream,
     sink: MonitorSink,
@@ -158,55 +160,53 @@ impl Stream for MonitoredStream {
     type Item = Result<StreamEvent, AiError>;
 
     fn poll_next(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let inner = unsafe { self.as_mut().map_unchecked_mut(|s| &mut s.inner) };
-        match inner.poll_next(cx) {
+        // Safe: AiStream is Pin<Box<dyn Stream>> which is Unpin
+        let this = self.get_mut();
+        match this.inner.as_mut().poll_next(cx) {
             std::task::Poll::Ready(Some(Ok(event))) => {
-                // Track usage for the final Complete event
                 if let StreamEvent::Usage {
                     input_tokens,
                     output_tokens,
                 } = &event
                 {
-                    self.last_input_tokens = Some(*input_tokens);
-                    self.last_output_tokens = Some(*output_tokens);
+                    this.last_input_tokens = Some(*input_tokens);
+                    this.last_output_tokens = Some(*output_tokens);
                 }
 
-                // On Done, emit ProviderComplete
                 if matches!(event, StreamEvent::Done) {
-                    let duration_ms = self.start.elapsed().as_millis() as u64;
-                    self.sink.emit(
+                    let duration_ms = this.start.elapsed().as_millis() as u64;
+                    this.sink.emit(
                         MonitorEvent::new(MonitorEventKind::ProviderComplete {
-                            provider: self.provider.clone(),
-                            response: ConversationResponse::Text(String::new()), // placeholder
+                            provider: this.provider.clone(),
+                            response: ConversationResponse::Text(String::new()),
                             duration_ms,
-                            input_tokens: self.last_input_tokens,
-                            output_tokens: self.last_output_tokens,
+                            input_tokens: this.last_input_tokens,
+                            output_tokens: this.last_output_tokens,
                         })
-                        .with_span(&self.span_id),
+                        .with_span(&this.span_id),
                     );
                 } else {
-                    // Emit stream event
-                    self.sink.emit(
+                    this.sink.emit(
                         MonitorEvent::new(MonitorEventKind::ProviderStreamEvent {
-                            provider: self.provider.clone(),
+                            provider: this.provider.clone(),
                             event: event.clone(),
                         })
-                        .with_span(&self.span_id),
+                        .with_span(&this.span_id),
                     );
                 }
 
                 std::task::Poll::Ready(Some(Ok(event)))
             }
             std::task::Poll::Ready(Some(Err(e))) => {
-                self.sink.emit(
+                this.sink.emit(
                     MonitorEvent::new(MonitorEventKind::ProviderError {
-                        provider: self.provider.clone(),
+                        provider: this.provider.clone(),
                         error: e.to_string(),
                     })
-                    .with_span(&self.span_id),
+                    .with_span(&this.span_id),
                 );
                 std::task::Poll::Ready(Some(Err(e)))
             }

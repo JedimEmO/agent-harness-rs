@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,8 +14,8 @@ pub struct MonitoredMcpTransport {
     inner: Arc<dyn Transport>,
     sink: MonitorSink,
     server_name: String,
-    /// Track the last sent request time for duration calculation.
-    last_send_time: tokio::sync::Mutex<Option<(i64, Instant)>>,
+    /// Track in-flight request times by JSON-RPC id for duration calculation.
+    pending_requests: tokio::sync::Mutex<HashMap<i64, Instant>>,
 }
 
 impl MonitoredMcpTransport {
@@ -23,7 +24,7 @@ impl MonitoredMcpTransport {
             inner,
             sink,
             server_name: server_name.into(),
-            last_send_time: tokio::sync::Mutex::new(None),
+            pending_requests: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -44,9 +45,8 @@ impl Transport for MonitoredMcpTransport {
                 .unwrap_or(serde_json::Value::Null);
             let rpc_id = parsed.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
-            // Track timing for this request
             if rpc_id != 0 {
-                *self.last_send_time.lock().await = Some((rpc_id, Instant::now()));
+                self.pending_requests.lock().await.insert(rpc_id, Instant::now());
             }
 
             self.sink.emit(MonitorEvent::new(MonitorEventKind::McpRequest {
@@ -73,19 +73,13 @@ impl Transport for MonitoredMcpTransport {
                 .and_then(|m| m.as_str())
                 .map(String::from);
 
-            // Calculate duration from the matching send
             let duration_ms = if rpc_id != 0 {
-                let mut last = self.last_send_time.lock().await;
-                if let Some((sent_id, start)) = last.take() {
-                    if sent_id == rpc_id {
-                        start.elapsed().as_millis() as u64
-                    } else {
-                        *last = Some((sent_id, start));
-                        0
-                    }
-                } else {
-                    0
-                }
+                self.pending_requests
+                    .lock()
+                    .await
+                    .remove(&rpc_id)
+                    .map(|start| start.elapsed().as_millis() as u64)
+                    .unwrap_or(0)
             } else {
                 0
             };

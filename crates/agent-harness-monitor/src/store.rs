@@ -138,19 +138,8 @@ impl MonitorStore {
             .into_boxed();
 
         if let Some(ref kinds) = filter.kinds {
-            // Diesel doesn't have a simple `.in_()` for Vec<String> on boxed queries,
-            // so we chain OR filters.
-            if kinds.len() == 1 {
-                query = query.filter(monitor_events::kind.eq(&kinds[0]));
-            } else if !kinds.is_empty() {
-                // Use raw SQL for IN clause
-                let placeholders: String = kinds.iter().map(|k| format!("'{}'", k)).collect::<Vec<_>>().join(",");
-                query = query.filter(
-                    diesel::dsl::sql::<diesel::sql_types::Bool>(&format!(
-                        "kind IN ({})",
-                        placeholders
-                    )),
-                );
+            if !kinds.is_empty() {
+                query = query.filter(monitor_events::kind.eq_any(kinds));
             }
         }
 
@@ -187,7 +176,7 @@ impl MonitorStore {
         rows.into_iter().map(row_to_event).collect()
     }
 
-    /// Count events matching a filter.
+    /// Count events matching a filter (applies all the same filters as `query()`).
     pub fn count(&self, filter: &MonitorFilter) -> Result<usize, MonitorStoreError> {
         let mut conn = self
             .pool
@@ -197,8 +186,8 @@ impl MonitorStore {
         let mut query = monitor_events::table.into_boxed();
 
         if let Some(ref kinds) = filter.kinds {
-            if kinds.len() == 1 {
-                query = query.filter(monitor_events::kind.eq(&kinds[0]));
+            if !kinds.is_empty() {
+                query = query.filter(monitor_events::kind.eq_any(kinds));
             }
         }
         if let Some(ref provider) = filter.provider {
@@ -206,6 +195,22 @@ impl MonitorStore {
         }
         if let Some(ref session_id) = filter.session_id {
             query = query.filter(monitor_events::session_id.eq(session_id));
+        }
+        if let Some(ref span_id) = filter.span_id {
+            query = query.filter(monitor_events::span_id.eq(span_id));
+        }
+        if let Some(ref direction) = filter.direction {
+            query = query.filter(monitor_events::direction.eq(direction));
+        }
+        if let Some(ref after) = filter.after {
+            query = query.filter(monitor_events::timestamp.gt(after));
+        }
+        if let Some(ref before) = filter.before {
+            query = query.filter(monitor_events::timestamp.lt(before));
+        }
+        if let Some(ref text) = filter.text_search {
+            let pattern = format!("%{}%", text);
+            query = query.filter(monitor_events::content.like(pattern));
         }
 
         let count: i64 = query
