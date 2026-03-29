@@ -34,9 +34,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    // 1. Provider
+    // 1. Provider (reads ANTHROPIC_API_KEY from env)
     let provider: Arc<dyn AiProvider> = Arc::new(
-        AnthropicProvider::new("sk-...".into(), "claude-sonnet-4-6".into())
+        AnthropicProvider::from_env().unwrap()
     );
 
     // 2. Tools
@@ -291,6 +291,11 @@ pub enum AgentEvent {
 ### Anthropic
 
 ```rust
+// From environment (recommended):
+let provider = AnthropicProvider::from_env()?;
+// Env: ANTHROPIC_API_KEY (required), ANTHROPIC_MODEL (default: claude-sonnet-4-6), ANTHROPIC_BASE_URL
+
+// Or explicit:
 let provider = AnthropicProvider::new(api_key, "claude-sonnet-4-6".into());
 // Optional: .with_base_url("https://custom-endpoint.com".into())
 ```
@@ -300,11 +305,16 @@ Auth: `x-api-key` header. Supports: text, images, streaming, tool calling.
 ### OpenAI (+ compatible APIs)
 
 ```rust
+// From environment (recommended):
+let provider = OpenAiProvider::from_env()?;
+// Env: OPENAI_API_KEY (required), OPENAI_MODEL (default: gpt-4o), OPENAI_BASE_URL
+// For OpenRouter: OPENAI_BASE_URL=https://openrouter.ai/api
+// For Ollama:     OPENAI_BASE_URL=http://localhost:11434
+
+// Or explicit:
 let provider = OpenAiProvider::new(api_key, "gpt-4o".into());
-// OpenRouter: .with_base_url("https://openrouter.ai/api".into())
-// Ollama:     .with_base_url("http://localhost:11434".into())
-// Azure:      .with_base_url("https://your.openai.azure.com".into())
-//             .with_extra_header("api-key".into(), key)
+// Azure: .with_base_url("https://your.openai.azure.com".into())
+//        .with_extra_header("api-key".into(), key)
 ```
 
 Auth: Bearer token. Supports: text, images, streaming, tool calling.
@@ -312,6 +322,11 @@ Auth: Bearer token. Supports: text, images, streaming, tool calling.
 ### Gemini
 
 ```rust
+// From environment (recommended):
+let provider = GeminiProvider::from_env()?;
+// Env: GEMINI_API_KEY or GOOGLE_API_KEY (required), GEMINI_MODEL (default: gemini-2.5-flash), GEMINI_BASE_URL
+
+// Or explicit:
 let provider = GeminiProvider::new(api_key, "gemini-2.5-flash".into());
 ```
 

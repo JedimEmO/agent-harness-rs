@@ -29,6 +29,25 @@ impl OpenAiProvider {
         }
     }
 
+    /// Create a provider from environment variables.
+    ///
+    /// Reads:
+    /// - `OPENAI_API_KEY` (required)
+    /// - `OPENAI_MODEL` (optional, defaults to `gpt-4o`)
+    /// - `OPENAI_BASE_URL` (optional, for OpenRouter/vLLM/Ollama/Azure)
+    pub fn from_env() -> Result<Self, AiError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            AiError::InvalidRequest("missing environment variable OPENAI_API_KEY".into())
+        })?;
+        let model =
+            std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+        let mut provider = Self::new(api_key, model);
+        if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
+            provider = provider.with_base_url(base_url);
+        }
+        Ok(provider)
+    }
+
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = base_url;
         self

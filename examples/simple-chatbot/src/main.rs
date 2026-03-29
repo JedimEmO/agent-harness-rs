@@ -23,14 +23,9 @@ and track tasks. Be concise and direct in your responses.";
 
 #[tokio::main]
 async fn main() {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .expect("Set ANTHROPIC_API_KEY environment variable");
-    let model = std::env::var("IRONFLOW_MODEL")
-        .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
-
-    // 1. Create provider
+    // 1. Create provider (reads ANTHROPIC_API_KEY, ANTHROPIC_MODEL from env)
     let provider: Arc<dyn AiProvider> = Arc::new(
-        AnthropicProvider::new(api_key, model)
+        AnthropicProvider::from_env().expect("Set ANTHROPIC_API_KEY environment variable")
     );
 
     // 2. Build tool registry

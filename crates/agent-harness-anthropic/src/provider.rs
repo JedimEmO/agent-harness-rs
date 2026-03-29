@@ -30,6 +30,25 @@ impl AnthropicProvider {
         }
     }
 
+    /// Create a provider from environment variables.
+    ///
+    /// Reads:
+    /// - `ANTHROPIC_API_KEY` (required)
+    /// - `ANTHROPIC_MODEL` (optional, defaults to `claude-sonnet-4-6`)
+    /// - `ANTHROPIC_BASE_URL` (optional)
+    pub fn from_env() -> Result<Self, AiError> {
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            AiError::InvalidRequest("missing environment variable ANTHROPIC_API_KEY".into())
+        })?;
+        let model = std::env::var("ANTHROPIC_MODEL")
+            .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+        let mut provider = Self::new(api_key, model);
+        if let Ok(base_url) = std::env::var("ANTHROPIC_BASE_URL") {
+            provider = provider.with_base_url(base_url);
+        }
+        Ok(provider)
+    }
+
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = base_url;
         self

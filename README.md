@@ -36,9 +36,9 @@ use agent_harness_tools_task::*;
 
 #[tokio::main]
 async fn main() {
-    // 1. Create a provider
+    // 1. Create a provider (reads ANTHROPIC_API_KEY from env)
     let provider: Arc<dyn AiProvider> = Arc::new(
-        AnthropicProvider::new("sk-...".into(), "claude-sonnet-4-6".into())
+        AnthropicProvider::from_env().unwrap()
     );
 
     // 2. Register tools

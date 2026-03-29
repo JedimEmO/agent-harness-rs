@@ -10,11 +10,24 @@
 //! ```rust,no_run
 //! use agent_harness_anthropic::AnthropicProvider;
 //!
+//! // From environment variables (recommended):
+//! let provider = AnthropicProvider::from_env()
+//!     .expect("ANTHROPIC_API_KEY must be set");
+//!
+//! // Or explicit:
 //! let provider = AnthropicProvider::new(
 //!     "your-api-key".to_string(),
 //!     "claude-sonnet-4-6".to_string(),
 //! );
 //! ```
+//!
+//! ## Environment Variables
+//!
+//! | Variable | Required | Default |
+//! |----------|----------|---------|
+//! | `ANTHROPIC_API_KEY` | Yes | — |
+//! | `ANTHROPIC_MODEL` | No | `claude-sonnet-4-6` |
+//! | `ANTHROPIC_BASE_URL` | No | `https://api.anthropic.com` |
 
 mod error;
 mod provider;

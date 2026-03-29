@@ -12,11 +12,24 @@
 //! ```rust,no_run
 //! use agent_harness_gemini::GeminiProvider;
 //!
+//! // From environment variables (recommended):
+//! let provider = GeminiProvider::from_env()
+//!     .expect("GEMINI_API_KEY or GOOGLE_API_KEY must be set");
+//!
+//! // Or explicit:
 //! let provider = GeminiProvider::new(
 //!     "your-api-key".to_string(),
 //!     "gemini-2.5-flash".to_string(),
 //! );
 //! ```
+//!
+//! ## Environment Variables
+//!
+//! | Variable | Required | Default |
+//! |----------|----------|---------|
+//! | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Yes | — |
+//! | `GEMINI_MODEL` | No | `gemini-2.5-flash` |
+//! | `GEMINI_BASE_URL` | No | `https://generativelanguage.googleapis.com` |
 
 mod error;
 mod provider;
