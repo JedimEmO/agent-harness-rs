@@ -11,7 +11,10 @@ use crate::client::McpClient;
 /// It delegates `execute()` to `McpClient::call_tool()`.
 pub struct McpToolBridge {
     client: Arc<McpClient>,
+    /// Name used in the agent registry (may be namespaced).
     tool_name: String,
+    /// Original name as known by the MCP server (for call_tool).
+    mcp_name: String,
     definition: ToolDefinition,
     permission: ToolPermission,
 }
@@ -30,6 +33,7 @@ impl McpToolBridge {
                 description,
                 parameters: input_schema,
             },
+            mcp_name: tool_name.clone(),
             tool_name,
             permission: ToolPermission::AutoExecute,
         }
@@ -42,6 +46,7 @@ impl McpToolBridge {
     }
 
     /// Override the tool name (e.g., to add a namespace prefix).
+    /// The original MCP name is preserved for server calls.
     pub fn with_name(mut self, name: String) -> Self {
         self.tool_name = name.clone();
         self.definition.name = name;
@@ -72,7 +77,7 @@ impl AgentTool for McpToolBridge {
 
         let result = self
             .client
-            .call_tool(&self.tool_name, arguments)
+            .call_tool(&self.mcp_name, arguments)
             .await
             .map_err(|e| AgentError::ToolError {
                 tool_name: self.tool_name.clone(),
