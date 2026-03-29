@@ -239,4 +239,159 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "2");
     }
+
+    // =========================================================================
+    // ADVERSARIAL TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn zero_budget_drops_everything() {
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![
+            make_block("1", "hello"),
+            make_block("2", "world"),
+        ];
+        let (result, report) = TruncateOldest::new()
+            .apply(blocks, 0, &counter)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0, "zero budget should drop all blocks");
+        assert_eq!(report.evicted_block_ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn zero_budget_but_pinned_blocks_kept() {
+        // BUG PROBE: Pinned blocks with budget=0.
+        // pinned_tokens = 5, remaining_budget = 0.saturating_sub(5) = 0.
+        // Pinned blocks are always kept. Non-pinned blocks need 0 remaining budget.
+        // But the pinned block itself has 5 tokens exceeding budget of 0.
+        // The implementation always keeps pinned blocks regardless of budget.
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![
+            make_block("pinned", "hello").pinned(),
+            make_block("normal", "world"),
+        ];
+        let (result, report) = TruncateOldest::new()
+            .apply(blocks, 0, &counter)
+            .await
+            .unwrap();
+        // BUG: Pinned block is kept even though budget is 0,
+        // meaning output exceeds budget
+        assert_eq!(result.len(), 1, "only pinned block should remain");
+        assert_eq!(result[0].id, "pinned");
+        assert_eq!(
+            report.final_tokens, 5,
+            "BUG: final tokens (5) EXCEEDS budget (0) because pinned blocks are always kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_blocks_list() {
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![];
+        let (result, report) = TruncateOldest::new()
+            .apply(blocks, 100, &counter)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0);
+        assert_eq!(report.original_blocks, 0);
+        assert_eq!(report.final_blocks, 0);
+    }
+
+    #[tokio::test]
+    async fn all_blocks_too_large_for_budget() {
+        // Every block individually exceeds budget
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![
+            make_block("1", &"a".repeat(100)),
+            make_block("2", &"b".repeat(100)),
+        ];
+        let (result, report) = TruncateOldest::new()
+            .apply(blocks, 5, &counter)
+            .await
+            .unwrap();
+        // Each block is 100 tokens, budget is 5. Neither fits.
+        assert_eq!(result.len(), 0, "all blocks too large should produce empty result");
+        assert_eq!(report.evicted_block_ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn grouped_blocks_one_pinned_keeps_whole_group() {
+        // BUG PROBE: If one block in a group is pinned, the whole group is pinned.
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![
+            make_block("tc1", "call").with_group("g1"),
+            make_block("tr1", "result that is long").with_group("g1").pinned(),
+            make_block("other", "x"),
+        ];
+        let (result, _) = TruncateOldest::new()
+            .apply(blocks, 5, &counter)
+            .await
+            .unwrap();
+        // Group g1 is pinned because tr1 is pinned. Total group tokens = 4 + 20 = 24.
+        // Budget = 5, but pinned blocks are always kept.
+        // remaining_budget = 5 - 24 = 0 (saturating). "x" (1 token) fits in 0? No.
+        let has_tc1 = result.iter().any(|b| b.id == "tc1");
+        let has_tr1 = result.iter().any(|b| b.id == "tr1");
+        assert!(has_tc1 && has_tr1, "pinned group members keep whole group");
+    }
+
+    #[tokio::test]
+    async fn pre_cached_token_counts_used() {
+        // BUG PROBE: If token_count is already set, it should be used as-is
+        // even if it doesn't match the actual content length.
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![
+            // Claim this block is 1000 tokens even though content is 5 chars
+            make_block("1", "hello").with_token_count(1000),
+            make_block("2", "world"),
+        ];
+        let (result, _) = TruncateOldest::new()
+            .apply(blocks, 100, &counter)
+            .await
+            .unwrap();
+        // Block 1 claims 1000 tokens, block 2 is 5 tokens. Total = 1005 > 100.
+        // Reverse: block 2 (5) fits in 100, block 1 (1000) doesn't fit in 95.
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "2");
+    }
+
+    #[tokio::test]
+    async fn chars_per_token_zero_handled() {
+        // BUG PROBE: CharEstimateCounter with chars_per_token=0.
+        // The implementation uses .max(1) to prevent division by zero.
+        let counter = CharEstimateCounter::new(0);
+        let blocks = vec![make_block("1", "hello")];
+        let (result, _) = TruncateOldest::new()
+            .apply(blocks, 100, &counter)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn single_block_exactly_at_budget() {
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![make_block("1", "hello")]; // 5 tokens
+        let (result, report) = TruncateOldest::new()
+            .apply(blocks, 5, &counter)
+            .await
+            .unwrap();
+        // 5 <= 5, so under budget — no truncation
+        assert_eq!(result.len(), 1);
+        assert!(report.evicted_block_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_block_one_over_budget() {
+        let counter = CharEstimateCounter::new(1);
+        let blocks = vec![make_block("1", "hello")]; // 5 tokens
+        let (result, report) = TruncateOldest::new()
+            .apply(blocks, 4, &counter)
+            .await
+            .unwrap();
+        // 5 > 4, and it's the only block so it gets dropped
+        assert_eq!(result.len(), 0);
+        assert_eq!(report.evicted_block_ids, vec!["1"]);
+    }
 }

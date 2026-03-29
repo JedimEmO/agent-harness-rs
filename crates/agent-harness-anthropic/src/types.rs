@@ -149,3 +149,118 @@ pub enum StreamingDelta {
 pub struct StreamingMessage {
     pub usage: Option<AnthropicUsage>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // ADVERSARIAL TESTS
+    // =========================================================================
+
+    #[test]
+    fn anthropic_content_untagged_string_vs_blocks_disambiguation() {
+        // BUG PROBE: AnthropicContent is #[serde(untagged)] with Text(String) first.
+        // A plain JSON string should deserialize as Text.
+        let json = r#""hello world""#;
+        let content: AnthropicContent = serde_json::from_str(json).unwrap();
+        match content {
+            AnthropicContent::Text(s) => assert_eq!(s, "hello world"),
+            _ => panic!("expected Text variant for plain string"),
+        }
+    }
+
+    #[test]
+    fn anthropic_content_untagged_blocks_array() {
+        // A JSON array should deserialize as Blocks
+        let json = r#"[{"type":"text","text":"hello"}]"#;
+        let content: AnthropicContent = serde_json::from_str(json).unwrap();
+        match content {
+            AnthropicContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    ContentBlock::Text { text } => assert_eq!(text, "hello"),
+                    _ => panic!("expected Text block"),
+                }
+            }
+            _ => panic!("expected Blocks variant for array"),
+        }
+    }
+
+    #[test]
+    fn anthropic_content_empty_string() {
+        let json = r#""""#;
+        let content: AnthropicContent = serde_json::from_str(json).unwrap();
+        match content {
+            AnthropicContent::Text(s) => assert!(s.is_empty()),
+            _ => panic!("expected Text variant for empty string"),
+        }
+    }
+
+    #[test]
+    fn anthropic_content_empty_array() {
+        let json = r#"[]"#;
+        let content: AnthropicContent = serde_json::from_str(json).unwrap();
+        match content {
+            AnthropicContent::Blocks(blocks) => assert!(blocks.is_empty()),
+            _ => panic!("expected Blocks variant for empty array"),
+        }
+    }
+
+    #[test]
+    fn anthropic_content_null_fails() {
+        // null is neither a string nor an array
+        let result = serde_json::from_str::<AnthropicContent>("null");
+        assert!(result.is_err(), "null should not match any AnthropicContent variant");
+    }
+
+    #[test]
+    fn response_content_block_unknown_type() {
+        // BUG PROBE: ResponseContentBlock has #[serde(other)] for Unknown.
+        // An unknown block type should deserialize as Unknown.
+        let json = r#"{"type":"thinking","thinking":"I'm pondering..."}"#;
+        let block: ResponseContentBlock = serde_json::from_str(json).unwrap();
+        assert!(matches!(block, ResponseContentBlock::Unknown));
+    }
+
+    #[test]
+    fn streaming_event_minimal_fields() {
+        // BUG PROBE: StreamingEvent with only required field (event_type)
+        let json = r#"{"type":"ping"}"#;
+        let event: StreamingEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, "ping");
+        assert!(event.index.is_none());
+        assert!(event.content_block.is_none());
+        assert!(event.delta.is_none());
+        assert!(event.message.is_none());
+        assert!(event.usage.is_none());
+    }
+
+    #[test]
+    fn content_block_tool_result_deserialization() {
+        let json = r#"{"type":"tool_result","tool_use_id":"abc","content":"result text"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { tool_use_id, content } => {
+                assert_eq!(tool_use_id, "abc");
+                assert_eq!(content, "result text");
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn anthropic_message_serialization_roundtrip() {
+        let msg = AnthropicMessage {
+            role: "user".to_string(),
+            content: AnthropicContent::Text("hello".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: AnthropicMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role, "user");
+        match deserialized.content {
+            AnthropicContent::Text(s) => assert_eq!(s, "hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+}

@@ -197,3 +197,117 @@ fn row_to_memory(row: MemoryRow) -> Memory {
         updated_at: row.updated_at,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_harness_core::{MemoryCategory, MemoryStore};
+    use crate::init_db;
+
+    fn test_pool() -> DbPool {
+        init_db(":memory:").expect("failed to init in-memory db")
+    }
+
+    #[tokio::test]
+    async fn save_and_search() {
+        let store = SqliteMemoryStore::new(test_pool());
+        store.save("scope1", "color", "user likes blue", MemoryCategory::Preference).await.unwrap();
+
+        let results = store.search("scope1", "blue", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "color");
+        assert_eq!(results[0].content, "user likes blue");
+        assert_eq!(results[0].category, MemoryCategory::Preference);
+    }
+
+    #[tokio::test]
+    async fn save_upserts_existing_key() {
+        let store = SqliteMemoryStore::new(test_pool());
+        store.save("scope1", "color", "blue", MemoryCategory::Preference).await.unwrap();
+        store.save("scope1", "color", "red", MemoryCategory::Preference).await.unwrap();
+
+        let results = store.search("scope1", "color", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content, "red");
+    }
+
+    #[tokio::test]
+    async fn search_respects_scope() {
+        let store = SqliteMemoryStore::new(test_pool());
+        store.save("scope-a", "key", "value", MemoryCategory::Fact).await.unwrap();
+
+        let results = store.search("scope-b", "value", 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_by_key() {
+        let store = SqliteMemoryStore::new(test_pool());
+        store.save("s", "project_goals", "build an AI", MemoryCategory::Fact).await.unwrap();
+
+        let results = store.search("s", "project", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_respects_limit() {
+        let store = SqliteMemoryStore::new(test_pool());
+        for i in 0..5 {
+            store.save("s", &format!("key{}", i), "matching content", MemoryCategory::Fact).await.unwrap();
+        }
+
+        let results = store.search("s", "matching", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_by_category() {
+        let store = SqliteMemoryStore::new(test_pool());
+        store.save("s", "fact1", "the sky is blue", MemoryCategory::Fact).await.unwrap();
+        store.save("s", "pref1", "likes dark mode", MemoryCategory::Preference).await.unwrap();
+
+        let facts = store.list("s", Some(MemoryCategory::Fact)).await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].key, "fact1");
+
+        let prefs = store.list("s", Some(MemoryCategory::Preference)).await.unwrap();
+        assert_eq!(prefs.len(), 1);
+        assert_eq!(prefs[0].key, "pref1");
+
+        let all = store.list("s", None).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_memory() {
+        let store = SqliteMemoryStore::new(test_pool());
+        let mem = store.save("s", "key", "value", MemoryCategory::Fact).await.unwrap();
+
+        let deleted = store.delete(&mem.id).await.unwrap();
+        assert!(deleted);
+
+        let results = store.search("s", "value", 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent() {
+        let store = SqliteMemoryStore::new(test_pool());
+        let deleted = store.delete("nonexistent-id").await.unwrap();
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn category_roundtrip() {
+        for cat in [MemoryCategory::Fact, MemoryCategory::Preference, MemoryCategory::Instruction, MemoryCategory::Context] {
+            let s = category_to_str(cat);
+            let back = str_to_category(s);
+            assert_eq!(cat, back);
+        }
+    }
+
+    #[test]
+    fn unknown_category_defaults_to_fact() {
+        assert_eq!(str_to_category("bogus"), MemoryCategory::Fact);
+    }
+}

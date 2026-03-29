@@ -9,3 +9,7 @@ description = "Memory tools for agent-harness agents (save_memory, recall_memori
 agent-harness-core = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+async-trait = { workspace = true }

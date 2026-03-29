@@ -256,3 +256,207 @@ impl AgentTool for ListTasksTool {
         Ok(ToolExecResult::text(output))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_harness_core::AgentTool;
+
+    fn make_store() -> TaskStore {
+        TaskStore::new()
+    }
+
+    #[tokio::test]
+    async fn create_task_tool_basic() {
+        let store = make_store();
+        let tool = CreateTaskTool::new(store);
+        let result = tool.execute("s", serde_json::json!({"description": "build widget"})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                assert_eq!(v["task_id"], "task_1");
+                assert_eq!(v["status"], "pending");
+                assert_eq!(v["description"], "build widget");
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_task_tool_with_parent() {
+        let store = make_store();
+        let tool = CreateTaskTool::new(store);
+        // Create parent first
+        tool.execute("s", serde_json::json!({"description": "parent"})).await.unwrap();
+        let result = tool.execute("s", serde_json::json!({
+            "description": "child",
+            "parent_id": "task_1"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                assert_eq!(v["parent_id"], "task_1");
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_task_tool_with_dependencies() {
+        let store = make_store();
+        let tool = CreateTaskTool::new(store.clone());
+        tool.execute("s", serde_json::json!({"description": "dep1"})).await.unwrap();
+        tool.execute("s", serde_json::json!({
+            "description": "main task",
+            "depends_on": ["task_1"]
+        })).await.unwrap();
+        let task = store.get_task("s", "task_2").await.unwrap();
+        assert_eq!(task.depends_on, vec!["task_1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn create_task_tool_with_assignment() {
+        let store = make_store();
+        let tool = CreateTaskTool::new(store.clone());
+        tool.execute("s", serde_json::json!({
+            "description": "assigned task",
+            "assigned_to": "agent-beta"
+        })).await.unwrap();
+        let task = store.get_task("s", "task_1").await.unwrap();
+        assert_eq!(task.assigned_to, Some("agent-beta".to_string()));
+    }
+
+    #[tokio::test]
+    async fn update_task_tool_status() {
+        let store = make_store();
+        let create = CreateTaskTool::new(store.clone());
+        let update = UpdateTaskTool::new(store.clone());
+        create.execute("s", serde_json::json!({"description": "task"})).await.unwrap();
+        let result = update.execute("s", serde_json::json!({
+            "task_id": "task_1",
+            "status": "completed"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                assert_eq!(v["status"], "completed");
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_task_tool_not_found() {
+        let store = make_store();
+        let tool = UpdateTaskTool::new(store);
+        let result = tool.execute("s", serde_json::json!({
+            "task_id": "nonexistent",
+            "status": "completed"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                let text = v.as_str().unwrap();
+                assert!(text.contains("not found"), "got: {}", text);
+            }
+            other => panic!("expected Completed text, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_task_tool_with_result() {
+        let store = make_store();
+        let create = CreateTaskTool::new(store.clone());
+        let update = UpdateTaskTool::new(store.clone());
+        create.execute("s", serde_json::json!({"description": "task"})).await.unwrap();
+        let result = update.execute("s", serde_json::json!({
+            "task_id": "task_1",
+            "status": "completed",
+            "result": "all tests passed"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                assert_eq!(v["result"], "all tests passed");
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tasks_tool_empty() {
+        let store = make_store();
+        let tool = ListTasksTool::new(store);
+        let result = tool.execute("s", serde_json::json!({})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                assert_eq!(v.as_str().unwrap(), "No tasks created yet.");
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tasks_tool_with_tasks() {
+        let store = make_store();
+        let create = CreateTaskTool::new(store.clone());
+        let update = UpdateTaskTool::new(store.clone());
+        let list = ListTasksTool::new(store.clone());
+
+        create.execute("s", serde_json::json!({"description": "first"})).await.unwrap();
+        create.execute("s", serde_json::json!({"description": "second"})).await.unwrap();
+        update.execute("s", serde_json::json!({"task_id": "task_1", "status": "completed"})).await.unwrap();
+
+        let result = list.execute("s", serde_json::json!({})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                let text = v.as_str().unwrap();
+                assert!(text.contains("1/2 completed"), "got: {}", text);
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tasks_tool_shows_dependencies() {
+        let store = make_store();
+        let create = CreateTaskTool::new(store.clone());
+        let list = ListTasksTool::new(store.clone());
+
+        create.execute("s", serde_json::json!({"description": "first"})).await.unwrap();
+        create.execute("s", serde_json::json!({
+            "description": "second",
+            "depends_on": ["task_1"]
+        })).await.unwrap();
+
+        let result = list.execute("s", serde_json::json!({})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                let text = v.as_str().unwrap();
+                assert!(text.contains("depends:"), "got: {}", text);
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_task_tools_correct_names() {
+        let store = make_store();
+        let tools: Vec<Box<dyn AgentTool>> = vec![
+            Box::new(CreateTaskTool::new(store.clone())),
+            Box::new(UpdateTaskTool::new(store.clone())),
+            Box::new(ListTasksTool::new(store)),
+        ];
+        for tool in &tools {
+            assert_eq!(tool.name(), tool.definition().name);
+        }
+    }
+
+    #[test]
+    fn all_task_tools_auto_execute() {
+        let store = make_store();
+        let tools: Vec<Box<dyn AgentTool>> = vec![
+            Box::new(CreateTaskTool::new(store.clone())),
+            Box::new(UpdateTaskTool::new(store.clone())),
+            Box::new(ListTasksTool::new(store)),
+        ];
+        for tool in &tools {
+            assert_eq!(tool.permission(), ToolPermission::AutoExecute, "tool {} should be AutoExecute", tool.name());
+        }
+    }
+}

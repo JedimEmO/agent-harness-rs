@@ -101,3 +101,76 @@ pub trait SessionStore: Send + Sync {
     async fn get_messages(&self, session_id: &str) -> Result<Vec<SessionMessage>, AgentError>;
     async fn delete_session(&self, id: &str) -> Result<(), AgentError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_content_text_serde_roundtrip() {
+        let content = MessageContent::Text("hello world".into());
+        let json = serde_json::to_string(&content).unwrap();
+        let deserialized: MessageContent = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&deserialized).unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn message_content_tool_calls_serde_roundtrip() {
+        let content = MessageContent::ToolCalls(vec![ToolCallRecord {
+            call_id: "c1".into(),
+            tool_name: "my_tool".into(),
+            arguments: serde_json::json!({"key": "value"}),
+        }]);
+        let json = serde_json::to_string(&content).unwrap();
+        let deserialized: MessageContent = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&deserialized).unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn message_role_serde_snake_case() {
+        let user_json = serde_json::to_string(&MessageRole::User).unwrap();
+        assert_eq!(user_json, "\"user\"");
+
+        let assistant_json = serde_json::to_string(&MessageRole::Assistant).unwrap();
+        assert_eq!(assistant_json, "\"assistant\"");
+
+        let system_json = serde_json::to_string(&MessageRole::System).unwrap();
+        assert_eq!(system_json, "\"system\"");
+
+        let tool_json = serde_json::to_string(&MessageRole::Tool).unwrap();
+        assert_eq!(tool_json, "\"tool\"");
+
+        // Roundtrip
+        let deserialized: MessageRole = serde_json::from_str("\"user\"").unwrap();
+        assert_eq!(deserialized, MessageRole::User);
+        let deserialized: MessageRole = serde_json::from_str("\"assistant\"").unwrap();
+        assert_eq!(deserialized, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn tool_call_record_from_provider_tool_call() {
+        let provider_tc = crate::provider::ToolCall {
+            id: "call-123".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "/tmp/test.txt"}),
+        };
+        let record = ToolCallRecord::from(&provider_tc);
+        assert_eq!(record.call_id, "call-123");
+        assert_eq!(record.tool_name, "read_file");
+        assert_eq!(record.arguments, serde_json::json!({"path": "/tmp/test.txt"}));
+    }
+
+    #[test]
+    fn tool_result_record_to_provider_tool_result() {
+        let record = ToolResultRecord {
+            call_id: "call-456".into(),
+            tool_name: "write_file".into(),
+            content: serde_json::json!({"status": "ok"}),
+        };
+        let provider_tr = crate::provider::ToolResult::from(&record);
+        assert_eq!(provider_tr.call_id, "call-456");
+        assert_eq!(provider_tr.content, serde_json::json!({"status": "ok"}));
+    }
+}

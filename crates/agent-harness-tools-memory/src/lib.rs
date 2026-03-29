@@ -117,3 +117,172 @@ impl AgentTool for RecallMemoriesTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use agent_harness_core::{AgentTool, Memory, MemoryCategory, MemoryStore, AgentError};
+
+    struct TestMemoryStore {
+        memories: RwLock<Vec<Memory>>,
+    }
+
+    impl TestMemoryStore {
+        fn new() -> Self {
+            Self { memories: RwLock::new(Vec::new()) }
+        }
+    }
+
+    #[async_trait]
+    impl MemoryStore for TestMemoryStore {
+        async fn save(&self, scope_id: &str, key: &str, content: &str, category: MemoryCategory) -> Result<Memory, AgentError> {
+            let memory = Memory {
+                id: format!("mem_{}", self.memories.read().await.len()),
+                scope_id: scope_id.to_string(),
+                key: key.to_string(),
+                content: content.to_string(),
+                category,
+                created_at: "2026-01-01".into(),
+                updated_at: "2026-01-01".into(),
+            };
+            self.memories.write().await.push(memory.clone());
+            Ok(memory)
+        }
+
+        async fn search(&self, scope_id: &str, query: &str, limit: usize) -> Result<Vec<Memory>, AgentError> {
+            let memories = self.memories.read().await;
+            Ok(memories.iter()
+                .filter(|m| m.scope_id == scope_id && (m.key.contains(query) || m.content.contains(query)))
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        async fn list(&self, scope_id: &str, category: Option<MemoryCategory>) -> Result<Vec<Memory>, AgentError> {
+            let memories = self.memories.read().await;
+            Ok(memories.iter()
+                .filter(|m| m.scope_id == scope_id && category.map_or(true, |c| m.category == c))
+                .cloned()
+                .collect())
+        }
+
+        async fn delete(&self, _id: &str) -> Result<bool, AgentError> {
+            Ok(true)
+        }
+    }
+
+    fn make_store() -> Arc<TestMemoryStore> {
+        Arc::new(TestMemoryStore::new())
+    }
+
+    #[tokio::test]
+    async fn save_memory_basic() {
+        let store = make_store();
+        let tool = SaveMemoryTool::new(store.clone());
+        let result = tool.execute("scope1", serde_json::json!({
+            "key": "favorite_color",
+            "content": "blue"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                let text = v.as_str().unwrap();
+                assert!(text.contains("Saved memory"), "got: {}", text);
+                assert!(text.contains("favorite_color"), "got: {}", text);
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn save_memory_with_category() {
+        let store = make_store();
+        let tool = SaveMemoryTool::new(store.clone());
+        tool.execute("scope1", serde_json::json!({
+            "key": "tone",
+            "content": "casual",
+            "category": "preference"
+        })).await.unwrap();
+        let memories = store.memories.read().await;
+        assert_eq!(memories[0].category, MemoryCategory::Preference);
+    }
+
+    #[tokio::test]
+    async fn save_memory_default_category() {
+        let store = make_store();
+        let tool = SaveMemoryTool::new(store.clone());
+        tool.execute("scope1", serde_json::json!({
+            "key": "sky",
+            "content": "is blue"
+        })).await.unwrap();
+        let memories = store.memories.read().await;
+        assert_eq!(memories[0].category, MemoryCategory::Fact);
+    }
+
+    #[test]
+    fn save_memory_requires_approval() {
+        let store = make_store();
+        let tool = SaveMemoryTool::new(store);
+        assert_eq!(tool.permission(), ToolPermission::RequiresApproval);
+    }
+
+    #[tokio::test]
+    async fn recall_memories_found() {
+        let store = make_store();
+        // Pre-populate via the store directly
+        store.save("scope1", "color", "blue is best", MemoryCategory::Preference).await.unwrap();
+        let tool = RecallMemoriesTool::new(store.clone());
+        let result = tool.execute("scope1", serde_json::json!({"query": "color"})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                let text = v.as_str().unwrap();
+                assert!(text.contains("color"), "got: {}", text);
+                assert!(text.contains("blue is best"), "got: {}", text);
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_memories_empty() {
+        let store = make_store();
+        let tool = RecallMemoriesTool::new(store);
+        let result = tool.execute("scope1", serde_json::json!({"query": "anything"})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                assert_eq!(v.as_str().unwrap(), "No relevant memories found.");
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recall_memories_is_auto_execute() {
+        let store = make_store();
+        let tool = RecallMemoriesTool::new(store);
+        assert_eq!(tool.permission(), ToolPermission::AutoExecute);
+    }
+
+    #[tokio::test]
+    async fn save_and_recall_roundtrip() {
+        let store = make_store();
+        let save_tool = SaveMemoryTool::new(store.clone());
+        let recall_tool = RecallMemoriesTool::new(store.clone());
+
+        save_tool.execute("scope1", serde_json::json!({
+            "key": "project_goal",
+            "content": "Build the best agent framework"
+        })).await.unwrap();
+
+        let result = recall_tool.execute("scope1", serde_json::json!({"query": "agent"})).await.unwrap();
+        match result {
+            ToolExecResult::Completed(v) => {
+                let text = v.as_str().unwrap();
+                assert!(text.contains("project_goal"), "got: {}", text);
+                assert!(text.contains("Build the best agent framework"), "got: {}", text);
+            }
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    }
+}

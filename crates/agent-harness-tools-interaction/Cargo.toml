@@ -9,3 +9,6 @@ description = "User interaction tools for agent-harness agents (ask_user, offer_
 agent-harness-core = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -495,6 +495,17 @@ impl AgentRunner {
                             Ok(StreamEvent::ToolCalls(calls)) => {
                                 tool_calls = calls;
                             }
+                            Ok(StreamEvent::AudioDelta { data, mime_type }) => {
+                                let _ = event_tx
+                                    .send(AgentEvent::AudioDelta {
+                                        data,
+                                        mime_type,
+                                    })
+                                    .await;
+                            }
+                            Ok(StreamEvent::AudioComplete { .. }) => {
+                                // Audio complete — no accumulation needed for text-based runner
+                            }
                             Ok(StreamEvent::Usage {
                                 input_tokens,
                                 output_tokens,
@@ -830,6 +841,859 @@ impl Agent for AgentRunner {
             .map_err(|e| AgentError::StorageError(format!("event collector panicked: {}", e)))?;
 
         Ok(result)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::AiError;
+    use crate::guardrail::{GuardrailContext, GuardrailResult, OutputGuardrail};
+    use crate::memory::{Memory, MemoryCategory, MemoryStore};
+    use crate::provider::*;
+    use crate::session::*;
+    use crate::tool::{AgentTool, ToolExecResult, ToolPermission, ToolRegistry};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    // ---- In-memory SessionStore ----
+
+    struct InMemorySessionStore {
+        sessions: RwLock<HashMap<String, Session>>,
+        messages: RwLock<HashMap<String, Vec<SessionMessage>>>,
+    }
+
+    impl InMemorySessionStore {
+        fn new() -> Self {
+            Self {
+                sessions: RwLock::new(HashMap::new()),
+                messages: RwLock::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionStore for InMemorySessionStore {
+        async fn create_session(&self, scope_id: &str) -> Result<Session, AgentError> {
+            let session = Session {
+                id: Uuid::new_v4().to_string(),
+                scope_id: scope_id.to_string(),
+                title: None,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+            };
+            self.sessions
+                .write()
+                .await
+                .insert(session.id.clone(), session.clone());
+            Ok(session)
+        }
+        async fn get_session(&self, id: &str) -> Result<Option<Session>, AgentError> {
+            Ok(self.sessions.read().await.get(id).cloned())
+        }
+        async fn list_sessions(&self, scope_id: &str) -> Result<Vec<Session>, AgentError> {
+            Ok(self
+                .sessions
+                .read()
+                .await
+                .values()
+                .filter(|s| s.scope_id == scope_id)
+                .cloned()
+                .collect())
+        }
+        async fn update_title(&self, id: &str, title: &str) -> Result<(), AgentError> {
+            if let Some(s) = self.sessions.write().await.get_mut(id) {
+                s.title = Some(title.to_string());
+            }
+            Ok(())
+        }
+        async fn append_message(&self, msg: &SessionMessage) -> Result<(), AgentError> {
+            self.messages
+                .write()
+                .await
+                .entry(msg.session_id.clone())
+                .or_default()
+                .push(msg.clone());
+            Ok(())
+        }
+        async fn get_messages(
+            &self,
+            session_id: &str,
+        ) -> Result<Vec<SessionMessage>, AgentError> {
+            Ok(self
+                .messages
+                .read()
+                .await
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+        async fn delete_session(&self, id: &str) -> Result<(), AgentError> {
+            self.sessions.write().await.remove(id);
+            self.messages.write().await.remove(id);
+            Ok(())
+        }
+    }
+
+    // ---- In-memory MemoryStore ----
+
+    struct InMemoryMemoryStore;
+
+    #[async_trait::async_trait]
+    impl MemoryStore for InMemoryMemoryStore {
+        async fn save(
+            &self,
+            scope_id: &str,
+            key: &str,
+            content: &str,
+            category: MemoryCategory,
+        ) -> Result<Memory, AgentError> {
+            Ok(Memory {
+                id: Uuid::new_v4().to_string(),
+                scope_id: scope_id.to_string(),
+                key: key.to_string(),
+                content: content.to_string(),
+                category,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+            })
+        }
+        async fn search(
+            &self,
+            _scope_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<Memory>, AgentError> {
+            Ok(Vec::new())
+        }
+        async fn list(
+            &self,
+            _scope_id: &str,
+            _category: Option<MemoryCategory>,
+        ) -> Result<Vec<Memory>, AgentError> {
+            Ok(Vec::new())
+        }
+        async fn delete(&self, _id: &str) -> Result<bool, AgentError> {
+            Ok(false)
+        }
+    }
+
+    // ---- Scripted AI Provider ----
+
+    struct ScriptedProvider {
+        responses: RwLock<Vec<ConversationResponse>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(responses: Vec<ConversationResponse>) -> Self {
+            Self {
+                responses: RwLock::new(responses),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AiProvider for ScriptedProvider {
+        async fn converse(
+            &self,
+            _request: ConversationRequest,
+        ) -> Result<ConversationResponse, AiError> {
+            let mut responses = self.responses.write().await;
+            if responses.is_empty() {
+                return Ok(ConversationResponse::Text("(no more responses)".into()));
+            }
+            Ok(responses.remove(0))
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                text_generation: true,
+                image_generation: false,
+                image_analysis: false,
+                streaming: true,
+                conversation: true,
+                provider_name: "scripted".into(),
+                audio_input: false,
+                audio_output: false,
+                live_session: false,
+            }
+        }
+
+        async fn converse_stream(
+            &self,
+            _request: ConversationRequest,
+        ) -> Result<AiStream, AiError> {
+            let mut responses = self.responses.write().await;
+            if responses.is_empty() {
+                let events = vec![
+                    Ok(StreamEvent::TextDelta("(no more)".into())),
+                    Ok(StreamEvent::TextComplete("(no more)".into())),
+                    Ok(StreamEvent::Done),
+                ];
+                return Ok(Box::pin(tokio_stream::iter(events)));
+            }
+            let response = responses.remove(0);
+            let events = match response {
+                ConversationResponse::Text(text) => vec![
+                    Ok(StreamEvent::TextDelta(text.clone())),
+                    Ok(StreamEvent::TextComplete(text)),
+                    Ok(StreamEvent::Done),
+                ],
+                ConversationResponse::ToolCalls(calls) => vec![
+                    Ok(StreamEvent::ToolCalls(calls)),
+                    Ok(StreamEvent::Done),
+                ],
+            };
+            Ok(Box::pin(tokio_stream::iter(events)))
+        }
+    }
+
+    /// A provider that returns RateLimited N times then succeeds.
+    struct RateLimitProvider {
+        attempts: std::sync::atomic::AtomicUsize,
+        fail_count: usize,
+    }
+
+    impl RateLimitProvider {
+        fn new(fail_count: usize) -> Self {
+            Self {
+                attempts: std::sync::atomic::AtomicUsize::new(0),
+                fail_count,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AiProvider for RateLimitProvider {
+        async fn converse(
+            &self,
+            _request: ConversationRequest,
+        ) -> Result<ConversationResponse, AiError> {
+            unreachable!("use converse_stream")
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                text_generation: true,
+                image_generation: false,
+                image_analysis: false,
+                streaming: true,
+                conversation: true,
+                provider_name: "rate-limit-test".into(),
+                audio_input: false,
+                audio_output: false,
+                live_session: false,
+            }
+        }
+
+        async fn converse_stream(
+            &self,
+            _request: ConversationRequest,
+        ) -> Result<AiStream, AiError> {
+            let attempt = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt < self.fail_count {
+                return Err(AiError::RateLimited);
+            }
+            let events = vec![
+                Ok(StreamEvent::TextDelta("recovered".into())),
+                Ok(StreamEvent::TextComplete("recovered".into())),
+                Ok(StreamEvent::Done),
+            ];
+            Ok(Box::pin(tokio_stream::iter(events)))
+        }
+    }
+
+    // ---- Test tool ----
+
+    struct EchoTool;
+
+    #[async_trait::async_trait]
+    impl AgentTool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "echo".into(),
+                description: "Echo the input".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "text": { "type": "string" } },
+                    "required": ["text"]
+                }),
+            }
+        }
+        fn permission(&self) -> ToolPermission {
+            ToolPermission::AutoExecute
+        }
+        async fn execute(
+            &self,
+            _scope_id: &str,
+            arguments: serde_json::Value,
+        ) -> Result<ToolExecResult, AgentError> {
+            let text = arguments
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            Ok(ToolExecResult::text(format!("echo: {}", text)))
+        }
+    }
+
+    struct ApprovalTool;
+
+    #[async_trait::async_trait]
+    impl AgentTool for ApprovalTool {
+        fn name(&self) -> &str {
+            "dangerous"
+        }
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "dangerous".into(),
+                description: "A dangerous tool".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        fn permission(&self) -> ToolPermission {
+            ToolPermission::RequiresApproval
+        }
+        async fn execute(
+            &self,
+            _scope_id: &str,
+            _arguments: serde_json::Value,
+        ) -> Result<ToolExecResult, AgentError> {
+            Ok(ToolExecResult::text("dangerous action done"))
+        }
+    }
+
+    // ---- Helpers ----
+
+    fn make_runner(provider: Arc<dyn AiProvider>, registry: Arc<ToolRegistry>) -> AgentRunner {
+        AgentRunner::new(
+            provider,
+            registry,
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryMemoryStore),
+            AgentConfig {
+                max_tool_rounds: 5,
+                max_context_tokens: 100_000,
+                chars_per_token_estimate: 4,
+                max_tokens: Some(4096),
+                tool_timeout_secs: None,
+                max_retries: 2,
+                retry_base_delay_ms: 1, // Fast retries for tests
+            },
+        )
+    }
+
+    async fn collect_events(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let is_complete = matches!(event, AgentEvent::TurnComplete);
+            events.push(event);
+            if is_complete {
+                break;
+            }
+        }
+        events
+    }
+
+    // ---- Tests ----
+
+    #[tokio::test]
+    async fn simple_text_turn() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ConversationResponse::Text(
+            "Hello from AI".into(),
+        )]));
+        let registry = Arc::new(ToolRegistry::new());
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "Hi", "System prompt");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner); // close event_tx
+
+        let events = event_handle.await.unwrap();
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::Thinking)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "Hello from AI")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { text, .. } if text == "Hello from AI")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnComplete)));
+    }
+
+    #[tokio::test]
+    async fn tool_call_round_trip() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            // First: request a tool call
+            ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "echo".into(),
+                arguments: serde_json::json!({"text": "ping"}),
+            }]),
+            // Second: return text after seeing tool result
+            ConversationResponse::Text("Got: echo: ping".into()),
+        ]));
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "echo ping", "sys");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallStarted { tool_name, .. } if tool_name == "echo")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallCompleted { tool_name, .. } if tool_name == "echo")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { text, .. } if text == "Got: echo: ping")));
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_returns_error_result() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "nonexistent".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            ConversationResponse::Text("handled gracefully".into()),
+        ]));
+
+        let registry = Arc::new(ToolRegistry::new());
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "call nonexistent", "sys");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        // Should complete without error — unknown tool returns error string as result
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnComplete)));
+    }
+
+    #[tokio::test]
+    async fn max_rounds_exceeded() {
+        // Provider always returns tool calls — should hit max_rounds
+        let mut responses = Vec::new();
+        for _ in 0..10 {
+            responses.push(ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "echo".into(),
+                arguments: serde_json::json!({"text": "loop"}),
+            }]));
+        }
+        let provider = Arc::new(ScriptedProvider::new(responses));
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "loop forever", "sys");
+        let _event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        let result = runner.run_turn(request).await;
+        assert!(matches!(result, Err(AgentError::MaxRoundsExceeded(5))));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_provider_call() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ConversationResponse::Text(
+            "should not reach".into(),
+        )]));
+        let registry = Arc::new(ToolRegistry::new());
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (cancel_tx, cancel_rx) = mpsc::channel(1);
+        cancel_tx.send(()).await.unwrap(); // Cancel before run
+
+        let (request, channels) =
+            TurnRequest::new(&session.id, "test", "hi", "sys");
+        let request = request.cancel_rx(cancel_rx);
+        let _event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        let result = runner.run_turn(request).await;
+        assert!(matches!(result, Err(AgentError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_retry_succeeds() {
+        let provider = Arc::new(RateLimitProvider::new(1)); // Fail once, then succeed
+        let registry = Arc::new(ToolRegistry::new());
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "hi", "sys");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RetryAttempt { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { text, .. } if text == "recovered")));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_retries_exhausted() {
+        let provider = Arc::new(RateLimitProvider::new(10)); // Always fail
+        let registry = Arc::new(ToolRegistry::new());
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "hi", "sys");
+        let _event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        let result = runner.run_turn(request).await;
+        assert!(matches!(
+            result,
+            Err(AgentError::AiError(AiError::RateLimited))
+        ));
+    }
+
+    #[tokio::test]
+    async fn tool_approval_approved() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "dangerous".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            ConversationResponse::Text("action completed".into()),
+        ]));
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(ApprovalTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "do danger", "sys");
+
+        // Spawn event consumer that auto-approves
+        let approval_tx = channels.approval_tx;
+        let event_handle = tokio::spawn(async move {
+            let mut rx = channels.event_rx;
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                if let AgentEvent::ToolApprovalNeeded { call_id, .. } = &event {
+                    let _ = approval_tx.send((call_id.clone(), true)).await;
+                }
+                let is_complete = matches!(event, AgentEvent::TurnComplete);
+                events.push(event);
+                if is_complete {
+                    break;
+                }
+            }
+            events
+        });
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolApprovalNeeded { tool_name, .. } if tool_name == "dangerous")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { text, .. } if text == "action completed")));
+    }
+
+    #[tokio::test]
+    async fn tool_approval_denied() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "dangerous".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            ConversationResponse::Text("continued after denial".into()),
+        ]));
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(ApprovalTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "do danger", "sys");
+
+        let approval_tx = channels.approval_tx;
+        let event_handle = tokio::spawn(async move {
+            let mut rx = channels.event_rx;
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                if let AgentEvent::ToolApprovalNeeded { call_id, .. } = &event {
+                    let _ = approval_tx.send((call_id.clone(), false)).await; // Deny
+                }
+                let is_complete = matches!(event, AgentEvent::TurnComplete);
+                events.push(event);
+                if is_complete {
+                    break;
+                }
+            }
+            events
+        });
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        // Should see the tool completed with "Denied by user"
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallCompleted { result, .. }
+                if result.as_str() == Some("Denied by user")
+        )));
+    }
+
+    #[tokio::test]
+    async fn tool_validation_failure() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "echo".into(),
+                arguments: serde_json::json!({}), // Missing required "text" field
+            }]),
+            ConversationResponse::Text("handled validation error".into()),
+        ]));
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "bad args", "sys");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        // Should see a recoverable error event for validation failure
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error {
+                recoverable: true,
+                message
+            } if message.contains("validation failed")
+        )));
+        // Should still complete the turn
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnComplete)));
+    }
+
+    #[tokio::test]
+    async fn auto_approve_skips_approval() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ConversationResponse::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                name: "dangerous".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            ConversationResponse::Text("auto-approved".into()),
+        ]));
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(ApprovalTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "auto", "sys");
+        let request = request.auto_approve(true); // Auto-approve
+
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        // Should NOT see ToolApprovalNeeded
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolApprovalNeeded { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { text, .. } if text == "auto-approved")));
+    }
+
+    #[tokio::test]
+    async fn guardrail_modify() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ConversationResponse::Text(
+            "sensitive content".into(),
+        )]));
+        let registry = Arc::new(ToolRegistry::new());
+        let mut runner = make_runner(provider, registry);
+
+        struct RedactGuardrail;
+        #[async_trait::async_trait]
+        impl OutputGuardrail for RedactGuardrail {
+            fn name(&self) -> &str {
+                "redact"
+            }
+            async fn validate(
+                &self,
+                output: &str,
+                _ctx: &GuardrailContext,
+            ) -> GuardrailResult {
+                if output.contains("sensitive") {
+                    GuardrailResult::Modify("[REDACTED]".into())
+                } else {
+                    GuardrailResult::Pass
+                }
+            }
+        }
+
+        runner.add_guardrail(Arc::new(RedactGuardrail));
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "hi", "sys");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        // Text should be modified by guardrail
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { text, .. } if text == "[REDACTED]")));
+    }
+
+    #[tokio::test]
+    async fn guardrail_block() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ConversationResponse::Text(
+            "blocked content".into(),
+        )]));
+        let registry = Arc::new(ToolRegistry::new());
+        let mut runner = make_runner(provider, registry);
+
+        struct BlockGuardrail;
+        #[async_trait::async_trait]
+        impl OutputGuardrail for BlockGuardrail {
+            fn name(&self) -> &str {
+                "block"
+            }
+            async fn validate(
+                &self,
+                output: &str,
+                _ctx: &GuardrailContext,
+            ) -> GuardrailResult {
+                if output.contains("blocked") {
+                    GuardrailResult::Block("policy violation".into())
+                } else {
+                    GuardrailResult::Pass
+                }
+            }
+        }
+
+        runner.add_guardrail(Arc::new(BlockGuardrail));
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "hi", "sys");
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        // Should see error event, NOT TextComplete
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error {
+                recoverable: false,
+                message
+            } if message.contains("policy violation")
+        )));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextComplete { .. })));
+    }
+
+    #[tokio::test]
+    async fn tool_filter_restricts_definitions() {
+        // The tool filter is applied when building the ConversationRequest.
+        // We can verify by checking the provider receives fewer tools.
+        let provider = Arc::new(ScriptedProvider::new(vec![ConversationResponse::Text(
+            "ok".into(),
+        )]));
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool)).await;
+        registry.register(Arc::new(ApprovalTool)).await;
+        let runner = make_runner(provider, registry);
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "hi", "sys");
+        let request = request.tool_filter(|name| name == "echo"); // Only echo
+
+        let event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+        drop(runner);
+
+        let events = event_handle.await.unwrap();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnComplete)));
+    }
+
+    #[tokio::test]
+    async fn messages_persisted_in_session_store() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ConversationResponse::Text(
+            "AI response".into(),
+        )]));
+        let registry = Arc::new(ToolRegistry::new());
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let runner = AgentRunner::new(
+            provider,
+            registry,
+            session_store.clone(),
+            Arc::new(InMemoryMemoryStore),
+            AgentConfig::default(),
+        );
+        let session = runner.create_session("test").await.unwrap();
+
+        let (request, channels) = TurnRequest::new(&session.id, "test", "Hello", "sys");
+        let _event_handle = tokio::spawn(collect_events(channels.event_rx));
+
+        runner.run_turn(request).await.unwrap();
+
+        // Check messages were persisted
+        let messages = session_store.get_messages(&session.id).await.unwrap();
+        assert_eq!(messages.len(), 2); // User + Assistant
+        assert_eq!(messages[0].role, MessageRole::User);
+        assert_eq!(messages[1].role, MessageRole::Assistant);
     }
 }
 

@@ -176,3 +176,227 @@ impl AgentTool for ShowPlanTool {
         Ok(ToolExecResult::NeedsInteraction(InteractionRequest::ShowPlan { title, steps }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_harness_core::AgentTool;
+
+    #[tokio::test]
+    async fn ask_user_basic() {
+        let tool = AskUserTool;
+        let result = tool.execute("s", serde_json::json!({"question": "what color?"})).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::AskUser { question, context }) => {
+                assert_eq!(question, "what color?");
+                assert!(context.is_none());
+            }
+            other => panic!("expected NeedsInteraction(AskUser), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_user_with_context() {
+        let tool = AskUserTool;
+        let result = tool.execute("s", serde_json::json!({
+            "question": "what color?",
+            "context": "for the background"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::AskUser { question, context }) => {
+                assert_eq!(question, "what color?");
+                assert_eq!(context, Some("for the background".to_string()));
+            }
+            other => panic!("expected NeedsInteraction(AskUser), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_user_missing_question() {
+        let tool = AskUserTool;
+        let result = tool.execute("s", serde_json::json!({})).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::AskUser { question, .. }) => {
+                assert_eq!(question, "");
+            }
+            other => panic!("expected NeedsInteraction(AskUser), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_options_basic() {
+        let tool = OfferOptionsTool;
+        let result = tool.execute("s", serde_json::json!({
+            "question": "pick one",
+            "options": [
+                {"id": "a", "label": "Option A"},
+                {"id": "b", "label": "Option B"}
+            ]
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::OfferOptions { question, options, allow_multiple }) => {
+                assert_eq!(question, "pick one");
+                assert_eq!(options.len(), 2);
+                assert_eq!(options[0].id, "a");
+                assert_eq!(options[1].label, "Option B");
+                assert!(!allow_multiple);
+            }
+            other => panic!("expected NeedsInteraction(OfferOptions), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_options_allow_multiple() {
+        let tool = OfferOptionsTool;
+        let result = tool.execute("s", serde_json::json!({
+            "question": "pick",
+            "options": [{"id": "a", "label": "A"}],
+            "allow_multiple": true
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::OfferOptions { allow_multiple, .. }) => {
+                assert!(allow_multiple);
+            }
+            other => panic!("expected NeedsInteraction(OfferOptions), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_options_empty_options() {
+        let tool = OfferOptionsTool;
+        let result = tool.execute("s", serde_json::json!({
+            "question": "pick",
+            "options": []
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::OfferOptions { options, .. }) => {
+                assert!(options.is_empty());
+            }
+            other => panic!("expected NeedsInteraction(OfferOptions), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_options_malformed_options() {
+        let tool = OfferOptionsTool;
+        let result = tool.execute("s", serde_json::json!({
+            "question": "pick",
+            "options": "not an array"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::OfferOptions { options, .. }) => {
+                assert!(options.is_empty());
+            }
+            other => panic!("expected NeedsInteraction(OfferOptions), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn confirm_action_basic() {
+        let tool = ConfirmActionTool;
+        let result = tool.execute("s", serde_json::json!({
+            "description": "delete everything"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::ConfirmAction { description, details }) => {
+                assert_eq!(description, "delete everything");
+                assert!(details.is_none());
+            }
+            other => panic!("expected NeedsInteraction(ConfirmAction), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn confirm_action_with_details() {
+        let tool = ConfirmActionTool;
+        let result = tool.execute("s", serde_json::json!({
+            "description": "delete everything",
+            "details": "this is irreversible"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::ConfirmAction { description, details }) => {
+                assert_eq!(description, "delete everything");
+                assert_eq!(details, Some("this is irreversible".to_string()));
+            }
+            other => panic!("expected NeedsInteraction(ConfirmAction), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn show_plan_basic() {
+        let tool = ShowPlanTool;
+        let result = tool.execute("s", serde_json::json!({
+            "title": "Deploy plan",
+            "steps": [
+                {"description": "Build"},
+                {"description": "Test", "tool_name": "run_tests"}
+            ]
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::ShowPlan { title, steps }) => {
+                assert_eq!(title, "Deploy plan");
+                assert_eq!(steps.len(), 2);
+                assert_eq!(steps[0].description, "Build");
+                assert!(steps[0].tool_name.is_none());
+                assert_eq!(steps[1].tool_name, Some("run_tests".to_string()));
+            }
+            other => panic!("expected NeedsInteraction(ShowPlan), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn show_plan_empty_steps() {
+        let tool = ShowPlanTool;
+        let result = tool.execute("s", serde_json::json!({
+            "title": "Empty plan",
+            "steps": []
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::ShowPlan { steps, .. }) => {
+                assert!(steps.is_empty());
+            }
+            other => panic!("expected NeedsInteraction(ShowPlan), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn show_plan_malformed_steps() {
+        let tool = ShowPlanTool;
+        let result = tool.execute("s", serde_json::json!({
+            "title": "Bad plan",
+            "steps": "not an array"
+        })).await.unwrap();
+        match result {
+            ToolExecResult::NeedsInteraction(InteractionRequest::ShowPlan { steps, .. }) => {
+                assert!(steps.is_empty());
+            }
+            other => panic!("expected NeedsInteraction(ShowPlan), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_tools_have_correct_names() {
+        let tools: Vec<Box<dyn AgentTool>> = vec![
+            Box::new(AskUserTool),
+            Box::new(OfferOptionsTool),
+            Box::new(ConfirmActionTool),
+            Box::new(ShowPlanTool),
+        ];
+        for tool in &tools {
+            assert_eq!(tool.name(), tool.definition().name);
+        }
+    }
+
+    #[test]
+    fn all_tools_are_auto_execute() {
+        let tools: Vec<Box<dyn AgentTool>> = vec![
+            Box::new(AskUserTool),
+            Box::new(OfferOptionsTool),
+            Box::new(ConfirmActionTool),
+            Box::new(ShowPlanTool),
+        ];
+        for tool in &tools {
+            assert_eq!(tool.permission(), ToolPermission::AutoExecute, "tool {} should be AutoExecute", tool.name());
+        }
+    }
+}

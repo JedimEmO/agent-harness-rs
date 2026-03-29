@@ -20,3 +20,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 agent-harness-context = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
