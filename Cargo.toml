@@ -9,6 +9,7 @@ members = [
     "crates/agent-harness-tools-task",
     "crates/agent-harness-gemini",
     "crates/agent-harness-mcp",
+    "crates/agent-harness-monitor",
     "crates/agent-harness-sqlite",
     "examples/simple-chatbot",
 ]
