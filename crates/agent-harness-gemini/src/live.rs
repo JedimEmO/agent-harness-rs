@@ -124,7 +124,7 @@ impl LiveProvider for GeminiProvider {
                                 json!({
                                     "id": r.call_id,
                                     "name": r.call_id,
-                                    "response": r.content,
+                                    "response": { "result": r.content },
                                 })
                             })
                             .collect();
@@ -135,10 +135,10 @@ impl LiveProvider for GeminiProvider {
                         })
                     }
                     LiveClientEvent::ActivityStart => {
-                        json!({ "activityStart": {} })
+                        json!({ "realtimeInput": { "activityStart": {} } })
                     }
                     LiveClientEvent::ActivityEnd => {
-                        json!({ "activityEnd": {} })
+                        json!({ "realtimeInput": { "activityEnd": {} } })
                     }
                     LiveClientEvent::Interrupt => {
                         warn!("explicit interrupt not directly supported in Gemini Live protocol");
@@ -159,8 +159,13 @@ impl LiveProvider for GeminiProvider {
                     }
                 };
 
+                // Log non-audio messages for debugging
+                if !msg_str.contains("realtimeInput") {
+                    eprintln!("[gemini-live] sending: {msg_str}");
+                }
+
                 if let Err(e) = ws_sink.send(Message::Text(msg_str.into())).await {
-                    error!(error = %e, "WebSocket send error");
+                    eprintln!("[gemini-live] WebSocket send error: {e}");
                     return;
                 }
             }
@@ -177,7 +182,8 @@ impl LiveProvider for GeminiProvider {
                 let text = match ws_msg {
                     Ok(Message::Text(t)) => t.to_string(),
                     Ok(Message::Binary(b)) => String::from_utf8_lossy(&b).to_string(),
-                    Ok(Message::Close(_)) => {
+                    Ok(Message::Close(frame)) => {
+                        eprintln!("[gemini-live] WebSocket closed by server: {frame:?}");
                         let _ = server_tx_clone.send(LiveServerEvent::Closed).await;
                         return;
                     }
