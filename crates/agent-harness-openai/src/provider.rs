@@ -91,6 +91,8 @@ impl OpenAiProvider {
                                         },
                                     })
                                 }
+                                // Audio not supported by OpenAI chat completions — skip
+                                ContentPart::Audio { .. } => None,
                             })
                             .collect();
                         result.push(OaiMessage {
@@ -288,6 +290,9 @@ impl AiProvider for OpenAiProvider {
             streaming: true,
             conversation: true,
             provider_name: format!("openai-compat/{}", self.model),
+            audio_input: false,
+            audio_output: false,
+            live_session: false,
         }
     }
 

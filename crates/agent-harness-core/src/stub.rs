@@ -40,6 +40,9 @@ impl AiProvider for StubProvider {
             streaming: false,
             conversation: true,
             provider_name: "stub".to_string(),
+            audio_input: false,
+            audio_output: false,
+            live_session: false,
         }
     }
 }

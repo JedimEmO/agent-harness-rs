@@ -7,6 +7,8 @@ members = [
     "crates/agent-harness-tools-interaction",
     "crates/agent-harness-tools-memory",
     "crates/agent-harness-tools-task",
+    "crates/agent-harness-gemini",
+    "crates/agent-harness-mcp",
     "crates/agent-harness-sqlite",
     "examples/simple-chatbot",
 ]
@@ -36,3 +38,5 @@ base64 = "0.22"
 diesel = { version = "2", features = ["sqlite", "r2d2"] }
 diesel_migrations = "2"
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"

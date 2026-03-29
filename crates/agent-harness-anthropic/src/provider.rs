@@ -74,6 +74,8 @@ impl AnthropicProvider {
                                     },
                                 })
                             }
+                            // Audio not supported by Anthropic — skip
+                            ContentPart::Audio { .. } => None,
                         })
                         .collect();
 
@@ -289,6 +291,9 @@ impl AiProvider for AnthropicProvider {
             streaming: true,
             conversation: true,
             provider_name: format!("anthropic/{}", self.model),
+            audio_input: false,
+            audio_output: false,
+            live_session: false,
         }
     }
 

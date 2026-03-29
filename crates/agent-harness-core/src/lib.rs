@@ -28,6 +28,7 @@ mod context_bridge;
 mod config;
 mod agent;
 mod guardrail;
+mod live;
 
 // --- Errors ---
 pub use error::{AgentError, AiError};
@@ -80,3 +81,9 @@ pub use agent::{Agent, SubAgentTool};
 
 // --- Output guardrails ---
 pub use guardrail::{GuardrailContext, GuardrailResult, OutputGuardrail};
+
+// --- Live/bidirectional streaming ---
+pub use live::{
+    LiveClientEvent, LiveProvider, LiveServerEvent, LiveSession, LiveSessionConfig,
+    LiveThinkingConfig, VadConfig,
+};
