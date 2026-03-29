@@ -28,10 +28,12 @@ mod client;
 mod bridge;
 mod registry;
 mod error;
+mod http_transport;
 mod transport;
 
 pub use client::McpClient;
 pub use bridge::McpToolBridge;
 pub use registry::McpRegistry;
 pub use error::McpError;
+pub use http_transport::HttpTransport;
 pub use transport::{StdioTransport, Transport};

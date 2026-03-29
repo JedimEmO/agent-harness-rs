@@ -55,6 +55,12 @@ impl McpClient {
         Ok(client)
     }
 
+    /// Create an MCP client over HTTP (Streamable HTTP transport).
+    pub async fn http(url: &str) -> Result<Self, McpError> {
+        let transport = Arc::new(crate::http_transport::HttpTransport::new(url));
+        Self::with_transport(transport).await
+    }
+
     /// Create an MCP client with a custom transport.
     pub async fn with_transport(transport: Arc<dyn Transport>) -> Result<Self, McpError> {
         let mut client = Self {
