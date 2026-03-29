@@ -33,12 +33,10 @@ impl MonitorSink {
 
     /// Emit a monitor event — stores to SQLite and broadcasts to subscribers.
     pub fn emit(&self, event: MonitorEvent) {
-        // Store persistently (sync, but fast for SQLite)
         if let Err(e) = self.store.insert(&event) {
             warn!(error = %e, "failed to store monitor event");
         }
 
-        // Broadcast to real-time consumers (ignore if no receivers)
         let _ = self.tx.send(event);
     }
 

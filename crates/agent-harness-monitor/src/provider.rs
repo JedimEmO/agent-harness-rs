@@ -19,6 +19,29 @@ impl<P: AiProvider> MonitoredProvider<P> {
     pub fn new(inner: P, sink: MonitorSink) -> Self {
         Self { inner, sink }
     }
+
+    fn emit_result<R>(
+        &self,
+        provider: &str,
+        span_id: &str,
+        result: &Result<R, AiError>,
+        make_complete: impl FnOnce(&R) -> MonitorEventKind,
+    ) {
+        match result {
+            Ok(resp) => {
+                self.sink.emit(MonitorEvent::new(make_complete(resp)).with_span(span_id));
+            }
+            Err(e) => {
+                self.sink.emit(
+                    MonitorEvent::new(MonitorEventKind::ProviderError {
+                        provider: provider.to_string(),
+                        error: e.to_string(),
+                    })
+                    .with_span(span_id),
+                );
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -30,7 +53,6 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
         let provider_name = self.inner.capabilities().provider_name;
         let span_id = uuid::Uuid::new_v4().to_string();
 
-        // Emit request event
         self.sink.emit(
             MonitorEvent::new(MonitorEventKind::ProviderRequest {
                 provider: provider_name.clone(),
@@ -47,29 +69,15 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
         let result = self.inner.converse(request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        match &result {
-            Ok(response) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
-                        provider: provider_name,
-                        response: response.clone(),
-                        duration_ms,
-                        input_tokens: None,
-                        output_tokens: None,
-                    })
-                    .with_span(&span_id),
-                );
+        self.emit_result(&provider_name, &span_id, &result, |response| {
+            MonitorEventKind::ProviderComplete {
+                provider: provider_name.clone(),
+                response: response.clone(),
+                duration_ms,
+                input_tokens: None,
+                output_tokens: None,
             }
-            Err(e) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderError {
-                        provider: provider_name,
-                        error: e.to_string(),
-                    })
-                    .with_span(&span_id),
-                );
-            }
-        }
+        });
 
         result
     }
@@ -85,7 +93,6 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
         let provider_name = self.inner.capabilities().provider_name;
         let span_id = uuid::Uuid::new_v4().to_string();
 
-        // Emit request event
         self.sink.emit(
             MonitorEvent::new(MonitorEventKind::ProviderRequest {
                 provider: provider_name.clone(),
@@ -144,29 +151,17 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
         let start = Instant::now();
         let result = self.inner.generate_text(request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
-        match &result {
-            Ok(resp) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
-                        provider: provider_name,
-                        response: ConversationResponse::Text(resp.text.clone()),
-                        duration_ms,
-                        input_tokens: None,
-                        output_tokens: resp.tokens_used,
-                    })
-                    .with_span(&span_id),
-                );
+
+        self.emit_result(&provider_name, &span_id, &result, |resp| {
+            MonitorEventKind::ProviderComplete {
+                provider: provider_name.clone(),
+                response: ConversationResponse::Text(resp.text.clone()),
+                duration_ms,
+                input_tokens: None,
+                output_tokens: resp.tokens_used,
             }
-            Err(e) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderError {
-                        provider: provider_name,
-                        error: e.to_string(),
-                    })
-                    .with_span(&span_id),
-                );
-            }
-        }
+        });
+
         result
     }
 
@@ -187,29 +182,19 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
         let start = Instant::now();
         let result = self.inner.generate_image(request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
-        match &result {
-            Ok(_) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
-                        provider: provider_name,
-                        response: ConversationResponse::Text("[image generated]".into()),
-                        duration_ms,
-                        input_tokens: None,
-                        output_tokens: None,
-                    })
-                    .with_span(&span_id),
-                );
+
+        self.emit_result(&provider_name, &span_id, &result, |resp| {
+            MonitorEventKind::ProviderComplete {
+                provider: provider_name.clone(),
+                response: ConversationResponse::Text(
+                    format!("Generated image: {} ({} bytes)", resp.mime_type, resp.image_data.len()),
+                ),
+                duration_ms,
+                input_tokens: None,
+                output_tokens: None,
             }
-            Err(e) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderError {
-                        provider: provider_name,
-                        error: e.to_string(),
-                    })
-                    .with_span(&span_id),
-                );
-            }
-        }
+        });
+
         result
     }
 
@@ -233,36 +218,22 @@ impl<P: AiProvider> AiProvider for MonitoredProvider<P> {
         let start = Instant::now();
         let result = self.inner.analyze_image(request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
-        match &result {
-            Ok(resp) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderComplete {
-                        provider: provider_name,
-                        response: ConversationResponse::Text(resp.description.clone()),
-                        duration_ms,
-                        input_tokens: None,
-                        output_tokens: None,
-                    })
-                    .with_span(&span_id),
-                );
+
+        self.emit_result(&provider_name, &span_id, &result, |resp| {
+            MonitorEventKind::ProviderComplete {
+                provider: provider_name.clone(),
+                response: ConversationResponse::Text(resp.description.clone()),
+                duration_ms,
+                input_tokens: None,
+                output_tokens: None,
             }
-            Err(e) => {
-                self.sink.emit(
-                    MonitorEvent::new(MonitorEventKind::ProviderError {
-                        provider: provider_name,
-                        error: e.to_string(),
-                    })
-                    .with_span(&span_id),
-                );
-            }
-        }
+        });
+
         result
     }
 }
 
 /// A stream wrapper that emits monitor events for each streamed item.
-// Unpin is safe because inner AiStream is Pin<Box<dyn Stream>> which is Unpin.
-impl Unpin for MonitoredStream {}
 struct MonitoredStream {
     inner: AiStream,
     sink: MonitorSink,
@@ -273,6 +244,9 @@ struct MonitoredStream {
     last_output_tokens: Option<u32>,
 }
 
+// All fields are Unpin (AiStream is Pin<Box<dyn Stream>> which is Unpin),
+// so MonitoredStream auto-derives Unpin. No manual impl needed.
+
 impl Stream for MonitoredStream {
     type Item = Result<StreamEvent, AiError>;
 
@@ -280,7 +254,6 @@ impl Stream for MonitoredStream {
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        // Safe: AiStream is Pin<Box<dyn Stream>> which is Unpin
         let this = self.get_mut();
         match this.inner.as_mut().poll_next(cx) {
             std::task::Poll::Ready(Some(Ok(event))) => {

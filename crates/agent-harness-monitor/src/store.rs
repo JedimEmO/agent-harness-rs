@@ -133,41 +133,10 @@ impl MonitorStore {
             .get()
             .map_err(|e| MonitorStoreError::Connection(e.to_string()))?;
 
-        let mut query = monitor_events::table
-            .order(monitor_events::timestamp.desc())
-            .into_boxed();
-
-        if let Some(ref kinds) = filter.kinds {
-            if !kinds.is_empty() {
-                let kind_strs: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
-                query = query.filter(monitor_events::kind.eq_any(kind_strs));
-            }
-        }
-
-        if let Some(ref provider) = filter.provider {
-            query = query.filter(monitor_events::provider.eq(provider));
-        }
-        if let Some(ref session_id) = filter.session_id {
-            query = query.filter(monitor_events::session_id.eq(session_id));
-        }
-        if let Some(ref span_id) = filter.span_id {
-            query = query.filter(monitor_events::span_id.eq(span_id));
-        }
-        if let Some(ref direction) = filter.direction {
-            query = query.filter(monitor_events::direction.eq(direction.as_str()));
-        }
-        if let Some(ref after) = filter.after {
-            query = query.filter(monitor_events::timestamp.gt(after));
-        }
-        if let Some(ref before) = filter.before {
-            query = query.filter(monitor_events::timestamp.lt(before));
-        }
-        if let Some(ref text) = filter.text_search {
-            let pattern = format!("%{}%", text);
-            query = query.filter(monitor_events::content.like(pattern));
-        }
+        let query = apply_filters(monitor_events::table.into_boxed(), filter);
 
         let rows: Vec<EventRow> = query
+            .order(monitor_events::timestamp.desc())
             .limit(filter.effective_limit())
             .offset(filter.effective_offset())
             .select(EventRow::as_select())
@@ -184,36 +153,7 @@ impl MonitorStore {
             .get()
             .map_err(|e| MonitorStoreError::Connection(e.to_string()))?;
 
-        let mut query = monitor_events::table.into_boxed();
-
-        if let Some(ref kinds) = filter.kinds {
-            if !kinds.is_empty() {
-                let kind_strs: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
-                query = query.filter(monitor_events::kind.eq_any(kind_strs));
-            }
-        }
-        if let Some(ref provider) = filter.provider {
-            query = query.filter(monitor_events::provider.eq(provider));
-        }
-        if let Some(ref session_id) = filter.session_id {
-            query = query.filter(monitor_events::session_id.eq(session_id));
-        }
-        if let Some(ref span_id) = filter.span_id {
-            query = query.filter(monitor_events::span_id.eq(span_id));
-        }
-        if let Some(ref direction) = filter.direction {
-            query = query.filter(monitor_events::direction.eq(direction.as_str()));
-        }
-        if let Some(ref after) = filter.after {
-            query = query.filter(monitor_events::timestamp.gt(after));
-        }
-        if let Some(ref before) = filter.before {
-            query = query.filter(monitor_events::timestamp.lt(before));
-        }
-        if let Some(ref text) = filter.text_search {
-            let pattern = format!("%{}%", text);
-            query = query.filter(monitor_events::content.like(pattern));
-        }
+        let query = apply_filters(monitor_events::table.into_boxed(), filter);
 
         let count: i64 = query
             .count()
@@ -249,7 +189,6 @@ impl MonitorStore {
             .get()
             .map_err(|e| MonitorStoreError::Connection(e.to_string()))?;
 
-        // Count current events
         let total: i64 = monitor_events::table
             .count()
             .get_result(&mut conn)
@@ -261,7 +200,6 @@ impl MonitorStore {
 
         let to_delete = total as usize - max_events;
 
-        // Delete the oldest N events
         let deleted = diesel::sql_query(format!(
             "DELETE FROM monitor_events WHERE id IN (SELECT id FROM monitor_events ORDER BY timestamp ASC LIMIT {})",
             to_delete
@@ -298,6 +236,41 @@ impl MonitorStore {
             }
         });
     }
+}
+
+fn apply_filters<'a>(
+    mut query: monitor_events::BoxedQuery<'a, diesel::sqlite::Sqlite>,
+    filter: &'a MonitorFilter,
+) -> monitor_events::BoxedQuery<'a, diesel::sqlite::Sqlite> {
+    if let Some(ref kinds) = filter.kinds {
+        if !kinds.is_empty() {
+            let kind_strs: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+            query = query.filter(monitor_events::kind.eq_any(kind_strs));
+        }
+    }
+    if let Some(ref provider) = filter.provider {
+        query = query.filter(monitor_events::provider.eq(provider));
+    }
+    if let Some(ref session_id) = filter.session_id {
+        query = query.filter(monitor_events::session_id.eq(session_id));
+    }
+    if let Some(ref span_id) = filter.span_id {
+        query = query.filter(monitor_events::span_id.eq(span_id));
+    }
+    if let Some(ref direction) = filter.direction {
+        query = query.filter(monitor_events::direction.eq(direction.as_str()));
+    }
+    if let Some(ref after) = filter.after {
+        query = query.filter(monitor_events::timestamp.gt(after));
+    }
+    if let Some(ref before) = filter.before {
+        query = query.filter(monitor_events::timestamp.lt(before));
+    }
+    if let Some(ref text) = filter.text_search {
+        let pattern = format!("%{}%", text);
+        query = query.filter(monitor_events::content.like(pattern));
+    }
+    query
 }
 
 fn row_to_event(row: EventRow) -> Result<MonitorEvent, MonitorStoreError> {

@@ -32,7 +32,6 @@ impl MonitoredMcpTransport {
 #[async_trait]
 impl Transport for MonitoredMcpTransport {
     async fn send(&self, message: &str) -> Result<(), McpError> {
-        // Try to parse as JSON-RPC to extract metadata
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(message) {
             let method = parsed
                 .get("method")
@@ -63,7 +62,6 @@ impl Transport for MonitoredMcpTransport {
     async fn recv(&self) -> Result<String, McpError> {
         let message = self.inner.recv().await?;
 
-        // Try to parse as JSON-RPC response
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
             let rpc_id = parsed.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             let result = parsed.get("result").cloned();
