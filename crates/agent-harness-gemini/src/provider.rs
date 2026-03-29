@@ -142,10 +142,17 @@ impl GeminiProvider {
                         .map(|r| {
                             // Gemini requires function name in FunctionResponse but we only have call_id.
                             // We use call_id as the name since it's the best we have.
+                            // Gemini requires `response` to be a JSON object (protobuf Struct).
+                            // Wrap non-object values in {"result": ...}.
+                            let response = if r.content.is_object() {
+                                r.content.clone()
+                            } else {
+                                serde_json::json!({ "result": r.content })
+                            };
                             GeminiPart::FunctionResponse {
                                 function_response: FunctionResponse {
                                     name: r.call_id.clone(),
-                                    response: r.content.clone(),
+                                    response,
                                 },
                             }
                         })
