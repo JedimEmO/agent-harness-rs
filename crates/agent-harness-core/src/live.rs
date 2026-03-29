@@ -56,6 +56,10 @@ pub enum LiveClientEvent {
     VideoFrame { data: Vec<u8>, mime_type: String },
     /// Tool execution results sent back to the model.
     ToolResults(Vec<ToolResult>),
+    /// Signal that the user started speaking (manual VAD).
+    ActivityStart,
+    /// Signal that the user stopped speaking (manual VAD).
+    ActivityEnd,
     /// Interrupt the model's current response.
     Interrupt,
     /// End the session.

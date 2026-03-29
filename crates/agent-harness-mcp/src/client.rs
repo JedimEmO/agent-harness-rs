@@ -38,6 +38,23 @@ impl McpClient {
         Ok(client)
     }
 
+    /// Create an MCP client over a stdio transport with custom environment variables.
+    pub async fn stdio_with_env(
+        program: &str,
+        args: &[&str],
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, McpError> {
+        let transport = Arc::new(StdioTransport::spawn_with_env(program, args, env).await?);
+        let mut client = Self {
+            transport,
+            next_id: AtomicI64::new(1),
+            server_name: None,
+            initialized: false,
+        };
+        client.initialize().await?;
+        Ok(client)
+    }
+
     /// Create an MCP client with a custom transport.
     pub async fn with_transport(transport: Arc<dyn Transport>) -> Result<Self, McpError> {
         let mut client = Self {

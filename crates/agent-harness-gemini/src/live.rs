@@ -37,7 +37,7 @@ impl LiveProvider for GeminiProvider {
         let setup_str = serde_json::to_string(&setup)
             .map_err(|e| AiError::ProviderError(format!("setup serialization error: {}", e)))?;
 
-        debug!("sending BidiGenerateContentSetup");
+        eprintln!("[gemini-live] sending setup: {setup_str}");
         ws_sink
             .send(Message::Text(setup_str.into()))
             .await
@@ -45,18 +45,15 @@ impl LiveProvider for GeminiProvider {
 
         // Wait for setup complete
         loop {
-            match ws_source.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    let msg: serde_json::Value =
-                        serde_json::from_str(&text).unwrap_or_default();
-                    if msg.get("setupComplete").is_some() {
-                        info!("Gemini Live session setup complete");
-                        break;
-                    }
-                    debug!(?msg, "received pre-setup message");
+            let text = match ws_source.next().await {
+                Some(Ok(Message::Text(t))) => t.to_string(),
+                Some(Ok(Message::Binary(b))) => String::from_utf8_lossy(&b).to_string(),
+                Some(Ok(other)) => {
+                    eprintln!("[gemini-live] received non-text message during setup: {other:?}");
+                    continue;
                 }
-                Some(Ok(_)) => continue,
                 Some(Err(e)) => {
+                    eprintln!("[gemini-live] error during setup: {e}");
                     return Err(AiError::ProviderError(format!(
                         "WebSocket error during setup: {}",
                         e
@@ -67,7 +64,15 @@ impl LiveProvider for GeminiProvider {
                         "WebSocket closed during setup".into(),
                     ));
                 }
+            };
+
+            eprintln!("[gemini-live] setup response: {text}");
+            let msg: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+            if msg.get("setupComplete").is_some() {
+                info!("Gemini Live session setup complete");
+                break;
             }
+            debug!(?msg, "received pre-setup message");
         }
 
         // Create channels
@@ -129,10 +134,13 @@ impl LiveProvider for GeminiProvider {
                             }
                         })
                     }
+                    LiveClientEvent::ActivityStart => {
+                        json!({ "activityStart": {} })
+                    }
+                    LiveClientEvent::ActivityEnd => {
+                        json!({ "activityEnd": {} })
+                    }
                     LiveClientEvent::Interrupt => {
-                        // Gemini doesn't have an explicit interrupt message;
-                        // interruption happens automatically via VAD when user speaks.
-                        // We could close and reconnect, but for now just skip.
                         warn!("explicit interrupt not directly supported in Gemini Live protocol");
                         continue;
                     }
@@ -168,6 +176,7 @@ impl LiveProvider for GeminiProvider {
             while let Some(ws_msg) = ws_source.next().await {
                 let text = match ws_msg {
                     Ok(Message::Text(t)) => t.to_string(),
+                    Ok(Message::Binary(b)) => String::from_utf8_lossy(&b).to_string(),
                     Ok(Message::Close(_)) => {
                         let _ = server_tx_clone.send(LiveServerEvent::Closed).await;
                         return;
@@ -379,6 +388,17 @@ fn build_setup_message(model: &str, config: &LiveSessionConfig) -> serde_json::V
             "includeThoughts": thinking.include_thoughts,
         });
     }
+    // Speech config (voice) — nested inside generationConfig
+    if let Some(ref voice) = config.voice {
+        gen_config["speechConfig"] = json!({
+            "voiceConfig": {
+                "prebuiltVoiceConfig": {
+                    "voiceName": voice,
+                }
+            }
+        });
+    }
+
     setup_obj.insert("generationConfig".to_string(), gen_config);
 
     // System instruction (skip empty strings)
@@ -409,20 +429,6 @@ fn build_setup_message(model: &str, config: &LiveSessionConfig) -> serde_json::V
         setup_obj.insert(
             "tools".to_string(),
             json!([{"functionDeclarations": declarations}]),
-        );
-    }
-
-    // Speech config (voice)
-    if let Some(ref voice) = config.voice {
-        setup_obj.insert(
-            "speechConfig".to_string(),
-            json!({
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {
-                        "voiceName": voice,
-                    }
-                }
-            }),
         );
     }
 
@@ -536,7 +542,7 @@ mod tests {
             ..Default::default()
         };
         let msg = build_setup_message("gemini-test", &config);
-        let voice_name = &msg["setup"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"];
+        let voice_name = &msg["setup"]["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"];
         assert_eq!(voice_name, "Kore");
     }
 
@@ -712,7 +718,7 @@ mod tests {
         // All fields should be present
         assert!(setup.get("systemInstruction").is_some());
         assert!(setup.get("tools").is_some());
-        assert!(setup.get("speechConfig").is_some());
+        assert!(setup["generationConfig"].get("speechConfig").is_some());
         assert!(setup.get("realtimeInputConfig").is_some());
         assert!(setup.get("inputAudioTranscription").is_some());
         assert!(setup.get("outputAudioTranscription").is_some());

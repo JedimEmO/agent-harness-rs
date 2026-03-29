@@ -24,13 +24,28 @@ pub struct StdioTransport {
 impl StdioTransport {
     /// Spawn a child process and wrap its stdio as an MCP transport.
     pub async fn spawn(program: &str, args: &[&str]) -> Result<Self, McpError> {
+        Self::spawn_with_env(program, args, &std::collections::HashMap::new()).await
+    }
+
+    /// Spawn a child process with custom environment variables.
+    pub async fn spawn_with_env(
+        program: &str,
+        args: &[&str],
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, McpError> {
         debug!(program, ?args, "spawning MCP server process");
 
-        let mut child = Command::new(program)
-            .args(args)
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+
+        if !env.is_empty() {
+            cmd.envs(env);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| McpError::Transport(format!("failed to spawn {}: {}", program, e)))?;
 
